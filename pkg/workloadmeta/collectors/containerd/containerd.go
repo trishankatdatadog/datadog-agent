@@ -163,7 +163,7 @@ func (c *collector) stream(ctx context.Context) {
 func (c *collector) generateEventsFromContainerList(ctx context.Context) error {
 	var events []workloadmeta.CollectorEvent
 
-	namespaces, err := cutil.NamespacesToWatch(ctx, c.containerdClient)
+	namespaces, err := cutil.NamespacesToWatchWithContext(ctx, c.containerdClient)
 	if err != nil {
 		return err
 	}

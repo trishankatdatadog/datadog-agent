@@ -18,14 +18,16 @@ import (
 // NamespacesToWatch returns the namespaces to watch. If the
 // "containerd_namespace" option has been set, it returns the namespaces it contains.
 // Otherwise, it returns all of them.
-func NamespacesToWatch(ctx context.Context, containerdClient ContainerdItf) ([]string, error) {
-	namespaces := config.Datadog.GetStringSlice("containerd_namespace")
+func NamespacesToWatch(containerdClient ContainerdItf) ([]string, error) {
+	return NamespacesToWatchWithContext(context.Background(), containerdClient)
+}
 
-	if len(namespaces) == 0 {
-		return containerdClient.Namespaces(ctx)
+func NamespacesToWatchWithContext(ctx context.Context, containerdClient ContainerdItf) ([]string, error) {
+	if namespaces := config.Datadog.GetStringSlice("containerd_namespace"); len(namespaces) > 0 {
+		return namespaces, nil
 	}
 
-	return namespaces, nil
+	return containerdClient.Namespaces(ctx)
 }
 
 // FiltersWithNamespaces returns the given list of filters adapted to take into

@@ -42,7 +42,7 @@ func TestNamespacesToWatch(t *testing.T) {
 		{
 			name:                   "containerd_namespace not set",
 			containerdNamespaceVal: "",
-			client: &fake.MockedContainerdClient{MockNamespaces: func(ctx context.Context) ([]string, error) {
+			client: &fake.MockedContainerdClient{MockNamespaces: func(context.Context) ([]string, error) {
 				return []string{"namespace_1", "namespace_2"}, nil
 			}},
 			expectedNamespaces: []string{"namespace_1", "namespace_2"},
@@ -50,7 +50,7 @@ func TestNamespacesToWatch(t *testing.T) {
 		},
 		{
 			name: "error when getting namespaces",
-			client: &fake.MockedContainerdClient{MockNamespaces: func(ctx context.Context) ([]string, error) {
+			client: &fake.MockedContainerdClient{MockNamespaces: func(context.Context) ([]string, error) {
 				return nil, errors.New("some error")
 			}},
 			containerdNamespaceVal: "",
@@ -64,7 +64,7 @@ func TestNamespacesToWatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			config.Datadog.Set("containerd_namespace", test.containerdNamespaceVal)
-			namespaces, err := NamespacesToWatch(context.TODO(), test.client)
+			namespaces, err := NamespacesToWatch(test.client)
 
 			if test.expectsError {
 				assert.Error(t, err)
