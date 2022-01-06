@@ -48,6 +48,8 @@ func (f *FallbackConstantFetcher) appendRequest(id string) {
 		value = getBpfMapTypeOffset(f.kernelVersion)
 	case "bpf_prog_aux_offset":
 		value = getBpfProgAuxOffset(f.kernelVersion)
+	case "bpf_prog_tag_offset":
+		value = getBpfProgTagOffset(f.kernelVersion)
 	case "bpf_prog_type_offset":
 		value = getBpfProgTypeOffset(f.kernelVersion)
 	case "bpf_prog_attach_type_offset":
@@ -180,6 +182,10 @@ func getBpfMapTypeOffset(kv *kernel.Version) uint64 {
 
 func getBpfProgAuxOffset(kv *kernel.Version) uint64 {
 	return uint64(32)
+}
+
+func getBpfProgTagOffset(kv *kernel.Version) uint64 {
+	return uint64(20)
 }
 
 func getBpfProgTypeOffset(kv *kernel.Version) uint64 {
