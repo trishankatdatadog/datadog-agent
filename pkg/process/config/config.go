@@ -209,6 +209,10 @@ func NewAgentConfig(loggerName config.LoggerName, yamlPath string, syscfg *sysco
 	var err error
 
 	cfg := NewDefaultAgentConfig()
+	// For Agent 6 we will have a YAML config file to use.
+	if err := LoadConfigIfExists(yamlPath); err != nil {
+		return nil, err
+	}
 
 	if err := cfg.LoadProcessYamlConfig(yamlPath); err != nil {
 		return nil, err
@@ -260,7 +264,7 @@ func NewAgentConfig(loggerName config.LoggerName, yamlPath string, syscfg *sysco
 // InitRuntimeSettings registers settings to be added to the runtime config.
 func InitRuntimeSettings() {
 	// NOTE: Any settings you want to register should simply be added here
-	var processRuntimeSettings = []settings.RuntimeSetting{
+	processRuntimeSettings := []settings.RuntimeSetting{
 		settings.LogLevelRuntimeSetting{},
 	}
 

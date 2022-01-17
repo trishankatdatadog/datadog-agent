@@ -20,8 +20,6 @@ import (
 	model "github.com/DataDog/agent-payload/v5/process"
 	"github.com/DataDog/datadog-agent/pkg/process/config"
 	"github.com/DataDog/datadog-agent/pkg/process/procutil"
-	"github.com/DataDog/datadog-agent/pkg/process/util"
-	"github.com/DataDog/datadog-agent/pkg/util/containers"
 	"github.com/DataDog/gopsutil/cpu"
 )
 
@@ -34,23 +32,20 @@ func TestBasicProcessMessages(t *testing.T) {
 		makeProcess(4, "foo -bar -bim"),
 		makeProcess(5, "datadog-process-agent -ddconfig datadog.conf"),
 	}
-	c := []*containers.Container{
+	c := []*model.Container{
 		makeContainer("foo"),
 		makeContainer("bar"),
 	}
-	// first container runs pid1 and pid2
-	c[0].Pids = []int32{1, 2}
-	c[1].Pids = []int32{3}
 	lastRun := time.Now().Add(-5 * time.Second)
 	syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
 	cfg := config.NewDefaultAgentConfig()
 	sysInfo := &model.SystemInfo{}
-	lastCtrRates := util.ExtractContainerRateMetric(c)
 
 	for i, tc := range []struct {
 		testName        string
 		cur, last       map[int32]*procutil.Process
-		containers      []*containers.Container
+		containers      []*model.Container
+		pidToCid        map[int]string
 		maxSize         int
 		blacklist       []string
 		expectedChunks  int
@@ -62,7 +57,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			last:            map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			maxSize:         2,
-			containers:      []*containers.Container{},
+			containers:      []*model.Container{},
+			pidToCid:        nil,
 			blacklist:       []string{},
 			expectedChunks:  2,
 			totalProcs:      3,
@@ -73,7 +69,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			last:            map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			maxSize:         1,
-			containers:      []*containers.Container{c[0]},
+			containers:      []*model.Container{c[0]},
+			pidToCid:        map[int]string{1: "foo", 2: "foo"},
 			blacklist:       []string{},
 			expectedChunks:  2,
 			totalProcs:      3,
@@ -84,7 +81,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			last:            map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			maxSize:         1,
-			containers:      []*containers.Container{c[1]},
+			containers:      []*model.Container{c[1]},
+			pidToCid:        map[int]string{3: "bar"},
 			blacklist:       []string{},
 			expectedChunks:  3,
 			totalProcs:      3,
@@ -95,7 +93,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			last:            map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			maxSize:         3,
-			containers:      []*containers.Container{c[1]},
+			containers:      []*model.Container{c[1]},
+			pidToCid:        map[int]string{3: "bar"},
 			blacklist:       []string{},
 			expectedChunks:  2,
 			totalProcs:      3,
@@ -106,7 +105,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			last:            map[int32]*procutil.Process{p[2].Pid: p[2], p[3].Pid: p[3], p[4].Pid: p[4]},
 			maxSize:         1,
-			containers:      []*containers.Container{c[0], c[1]},
+			containers:      []*model.Container{c[0], c[1]},
+			pidToCid:        map[int]string{1: "foo", 2: "foo", 3: "bar"},
 			blacklist:       []string{},
 			expectedChunks:  3,
 			totalProcs:      3,
@@ -117,7 +117,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			last:            map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			maxSize:         1,
-			containers:      []*containers.Container{c[0], c[1]},
+			containers:      []*model.Container{c[0], c[1]},
+			pidToCid:        map[int]string{1: "foo", 2: "foo", 3: "bar"},
 			blacklist:       []string{},
 			expectedChunks:  1,
 			totalProcs:      3,
@@ -128,7 +129,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cur:             map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			last:            map[int32]*procutil.Process{p[0].Pid: p[0], p[1].Pid: p[1], p[2].Pid: p[2]},
 			maxSize:         2,
-			containers:      []*containers.Container{c[1]},
+			containers:      []*model.Container{c[1]},
+			pidToCid:        map[int]string{3: "bar"},
 			blacklist:       []string{"foo"},
 			expectedChunks:  2,
 			totalProcs:      2,
@@ -144,9 +146,8 @@ func TestBasicProcessMessages(t *testing.T) {
 			cfg.MaxPerMessage = tc.maxSize
 			networks := make(map[int32][]*model.Connection)
 
-			procs := fmtProcesses(cfg, tc.cur, tc.last, containersByPid(tc.containers), syst2, syst1, lastRun, networks)
-			containers := fmtContainers(tc.containers, lastCtrRates, lastRun)
-			messages, totalProcs, totalContainers := createProcCtrMessages(procs, containers, cfg, sysInfo, int32(i), "nid")
+			procs := fmtProcesses(cfg, tc.cur, tc.last, tc.pidToCid, syst2, syst1, lastRun, networks)
+			messages, totalProcs, totalContainers := createProcCtrMessages(procs, tc.containers, cfg, sysInfo, int32(i), "nid")
 
 			assert.Equal(t, tc.expectedChunks, len(messages))
 			assert.Equal(t, tc.totalProcs, totalProcs)
@@ -320,21 +321,19 @@ func TestContainerProcessChunking(t *testing.T) {
 	} {
 		t.Run(tc.testName, func(t *testing.T) {
 			networks := make(map[int32][]*model.Connection)
-			procs, ctrs := generateCtrProcs(tc.ctrProcs)
+			procs, ctrs, pidToCid := generateCtrProcs(tc.ctrProcs)
 			procsByPid := procsToHash(procs)
 
 			lastRun := time.Now().Add(-5 * time.Second)
 			syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
 			cfg := config.NewDefaultAgentConfig()
 			sysInfo := &model.SystemInfo{}
-			lastCtrRates := util.ExtractContainerRateMetric(ctrs)
 			cfg.MaxPerMessage = tc.maxSize
 			cfg.MaxCtrProcessesPerMessage = tc.maxCtrProcSize
 			cfg.ContainerHostType = tc.containerHostType
 
-			processes := fmtProcesses(cfg, procsByPid, procsByPid, ctrIDForPID(ctrs), syst2, syst1, lastRun, networks)
-			containers := fmtContainers(ctrs, lastCtrRates, lastRun)
-			messages, totalProcs, totalContainers := createProcCtrMessages(processes, containers, cfg, sysInfo, int32(i), "nid")
+			processes := fmtProcesses(cfg, procsByPid, procsByPid, pidToCid, syst2, syst1, lastRun, networks)
+			messages, totalProcs, totalContainers := createProcCtrMessages(processes, ctrs, cfg, sysInfo, int32(i), "nid")
 
 			assert.Equal(t, tc.expectedProcCount, totalProcs)
 			assert.Equal(t, tc.expectedCtrCount, totalContainers)
@@ -385,7 +384,7 @@ func verifyBatchedMsgs(t *testing.T, cfg *config.AgentConfig, expected []map[str
 
 		assert.Equal(cfg.ContainerHostType, payload.ContainerHostType)
 
-		var actualCtrPIDCounts = map[string]int{}
+		actualCtrPIDCounts := map[string]int{}
 
 		// verify number of processes for each container
 		for _, proc := range payload.Processes {
@@ -397,23 +396,24 @@ func verifyBatchedMsgs(t *testing.T, cfg *config.AgentConfig, expected []map[str
 }
 
 // generateCtrProcs generates groups of processes for linking with containers
-func generateCtrProcs(ctrProcs []ctrProc) ([]*procutil.Process, []*containers.Container) {
+func generateCtrProcs(ctrProcs []ctrProc) ([]*procutil.Process, []*model.Container, map[int]string) {
 	var procs []*procutil.Process
-	var ctrs []*containers.Container
+	var ctrs []*model.Container
+	pidToCid := make(map[int]string)
 	pid := 1
 
 	for _, ctrProc := range ctrProcs {
 		ctr := makeContainer(ctrProc.ctrID)
-		if ctr.ID != emptyCtrID {
+		if ctr.Id != emptyCtrID {
 			ctrs = append(ctrs, ctr)
 		}
 
 		for i := 0; i < ctrProc.pCounts; i++ {
 			proc := makeProcess(int32(pid), fmt.Sprintf("cmd %d", pid))
-			ctr.Pids = append(ctr.Pids, proc.Pid)
 			procs = append(procs, proc)
+			pidToCid[pid] = ctr.Id
 			pid++
 		}
 	}
-	return procs, ctrs
+	return procs, ctrs, pidToCid
 }

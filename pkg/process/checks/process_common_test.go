@@ -8,7 +8,6 @@ package checks
 import (
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,57 +19,13 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/process/config"
 	"github.com/DataDog/datadog-agent/pkg/process/procutil"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
-	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
 	"github.com/DataDog/gopsutil/cpu"
 )
 
-//nolint:unused
-func makeContainer(id string) *containers.Container {
-	return &containers.Container{
-		ID: id,
-		ContainerMetrics: metrics.ContainerMetrics{
-			CPU:    &metrics.ContainerCPUStats{},
-			Memory: &metrics.ContainerMemStats{},
-			IO:     &metrics.ContainerIOStats{},
-		},
+func makeContainer(id string) *model.Container {
+	return &model.Container{
+		Id: id,
 	}
-}
-
-//nolint:deadcode,unused
-func procCtrGenerator(pCount int, cCount int, containeredProcs int) ([]*procutil.Process, []*containers.Container) {
-	procs := make([]*procutil.Process, 0, pCount)
-	for i := 0; i < pCount; i++ {
-		procs = append(procs, makeProcess(int32(i), strconv.Itoa(i)))
-	}
-
-	ctrs := make([]*containers.Container, 0, cCount)
-	for i := 0; i < cCount; i++ {
-		ctrs = append(ctrs, makeContainer(strconv.Itoa(i)))
-	}
-
-	// build container process relationship
-	ctrIdx := 0
-	for i := 0; i < containeredProcs; i++ {
-		// reset to 0 if hit the last one
-		if ctrIdx == cCount {
-			ctrIdx = 0
-		}
-		ctrs[ctrIdx].Pids = append(ctrs[ctrIdx].Pids, procs[i].Pid)
-		ctrIdx++
-	}
-
-	return procs, ctrs
-}
-
-func containersByPid(ctrs []*containers.Container) map[int32]string {
-	ctrsByPid := make(map[int32]string)
-	for _, c := range ctrs {
-		for _, p := range c.Pids {
-			ctrsByPid[p] = c.ID
-		}
-	}
-
-	return ctrsByPid
 }
 
 //nolint:deadcode,unused
@@ -139,7 +94,6 @@ func TestProcessChunking(t *testing.T) {
 		makeProcess(3, "datadog-process-agent -ddconfig datadog.conf"),
 		makeProcess(4, "foo -bar -bim"),
 	}
-	containers := []*containers.Container{}
 	lastRun := time.Now().Add(-5 * time.Second)
 	syst1, syst2 := cpu.TimesStat{}, cpu.TimesStat{}
 	cfg := config.NewDefaultAgentConfig()
@@ -222,7 +176,7 @@ func TestProcessChunking(t *testing.T) {
 		}
 		networks := make(map[int32][]*model.Connection)
 
-		procs := fmtProcesses(cfg, cur, last, containersByPid(containers), syst2, syst1, lastRun, networks)
+		procs := fmtProcesses(cfg, cur, last, nil, syst2, syst1, lastRun, networks)
 		// only deal with non-container processes
 		chunked := chunkProcesses(procs[emptyCtrID], cfg.MaxPerMessage)
 		assert.Len(t, chunked, tc.expectedProcChunks, "len %d", i)
@@ -232,7 +186,7 @@ func TestProcessChunking(t *testing.T) {
 		}
 		assert.Equal(t, tc.expectedProcTotal, total, "total test %d", i)
 
-		chunkedStat := fmtProcessStats(cfg, curStats, lastStats, containers, syst2, syst1, lastRun, networks)
+		chunkedStat := fmtProcessStats(cfg, curStats, lastStats, nil, syst2, syst1, lastRun, networks)
 		assert.Len(t, chunkedStat, tc.expectedStatChunks, "len stat %d", i)
 		total = 0
 		for _, c := range chunkedStat {
@@ -319,7 +273,6 @@ func TestFormatIO(t *testing.T) {
 	assert.Equal(t, float32(6), result.WriteRate)
 	assert.Equal(t, float32(7), result.ReadBytesRate)
 	assert.Equal(t, float32(8), result.WriteBytesRate)
-
 }
 
 func TestFormatNetworks(t *testing.T) {

@@ -29,7 +29,7 @@ type Container struct {
 	Type          string            `json:"Type"`
 	Image         string            `json:"Image"`
 	Labels        map[string]string `json:"Labels"`
-	KnownStatus   string            `json:"KnownStatus"`
+	KnownStatus   string            `json:"KnownStatus"` // See https://github.com/aws/amazon-ecs-agent/blob/master/agent/api/container/status/containerstatus.go
 	DesiredStatus string            `json:"DesiredStatus"`
 	DockerID      string            `json:"DockerID"`
 	CreatedAt     string            `json:"CreatedAt"`
