@@ -34,12 +34,6 @@ const (
 	// DefaultProcessMaxPerMessage is the default maximum number of processes, or containers per message. Note: Only change if the defaults are causing issues.
 	DefaultProcessMaxPerMessage = 100
 
-	// DefaultProcessMaxCtrProcsPerMessage is the default maximum number of processes belonging to a container per message. Note: Only change if the defaults are causing issues.
-	DefaultProcessMaxCtrProcsPerMessage = 10000
-
-	// ProcessMaxCtrProcsPerMessageLimit is the maximum allowed value for process_config.max_ctr_procs_per_message.
-	ProcessMaxCtrProcsPerMessageLimit = 30000
-
 	// DefaultProcessEndpoint is the default endpoint for the process agent to send payloads to
 	DefaultProcessEndpoint = "https://process.datadoghq.com"
 )
@@ -97,7 +91,6 @@ func setupProcesses(config Config) {
 	procBindEnvAndSetDefault(config, "process_config.process_queue_bytes", DefaultProcessQueueBytes)
 	procBindEnvAndSetDefault(config, "process_config.rt_queue_size", DefaultProcessRTQueueSize)
 	procBindEnvAndSetDefault(config, "process_config.max_per_message", DefaultProcessMaxPerMessage)
-	procBindEnvAndSetDefault(config, "process_config.max_ctr_procs_per_message", DefaultProcessMaxCtrProcsPerMessage)
 	config.SetKnown("process_config.cmd_port")
 	config.SetKnown("process_config.intervals.process")
 	config.SetKnown("process_config.blacklist_patterns")
