@@ -3,8 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//go:build kubelet
-//go:build !kubeapiserver
+//go:build kubelet && !kubeapiserver
 
 package hostinfo
 
