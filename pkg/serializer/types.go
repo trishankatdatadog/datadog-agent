@@ -4,7 +4,6 @@
 // Copyright 2016-present Datadog, Inc.
 
 //go:build !orchestrator
-// +build !orchestrator
 
 package serializer
 
@@ -12,16 +11,6 @@ package serializer
 // this type alias allows to avoid importing the process agent payload proto
 // in case it's not needed (dogstastd)
 type ProcessMessageBody = stubMessageBody
-
-type processPayloadEncoderStub struct{}
-
-// messageBody is a common interface used by all process message types.
-type messageBody interface {
-	ProtoMessage()
-	Reset()
-	String() string
-	Size() int
-}
 
 type stubMessageBody struct{}
 

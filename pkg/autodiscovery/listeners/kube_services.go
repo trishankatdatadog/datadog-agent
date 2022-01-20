@@ -4,7 +4,6 @@
 // Copyright 2016-present Datadog, Inc.
 
 //go:build clusterchecks && kubeapiserver
-// +build clusterchecks,kubeapiserver
 
 package listeners
 
@@ -59,6 +58,16 @@ var _ Service = &KubeServiceService{}
 
 func init() {
 	Register(kubeServicesName, NewKubeServiceListener)
+}
+
+// isServiceAnnotated returns true if the Service has an annotation with a given key
+func isServiceAnnotated(ksvc *v1.Service, annotationKey string) bool {
+	if ksvc != nil {
+		if _, found := ksvc.GetAnnotations()[annotationKey]; found {
+			return true
+		}
+	}
+	return false
 }
 
 func NewKubeServiceListener(conf Config) (ServiceListener, error) {
