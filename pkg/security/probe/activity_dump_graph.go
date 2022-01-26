@@ -128,7 +128,7 @@ func (ad *ActivityDump) prepareFileNode(f *FileActivityNode, data *graph, prefix
 	fileID := fmt.Sprintf("%s_%s_%s", processID, f.Name, prefix+f.Name)
 	fn := node{
 		ID:    generateNodeID(fileID),
-		Label: f.Name,
+		Label: f.getNodeLabel(),
 		Size:  30,
 		Color: fileColor,
 	}
