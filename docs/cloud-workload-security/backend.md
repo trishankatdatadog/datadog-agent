@@ -1191,6 +1191,10 @@ CWS logs have the following JSON schema:
         "pid": {
             "type": "integer",
             "description": "signal target pid"
+        },
+        "target": {
+            "$ref": "#/definitions/ProcessContext",
+            "description": "process context of the signal target"
         }
     },
     "additionalProperties": false,
@@ -1203,7 +1207,11 @@ CWS logs have the following JSON schema:
 | ----- | ----------- |
 | `type` | signal type |
 | `pid` | signal target pid |
+| `target` | process context of the signal target |
 
+| References |
+| ---------- |
+| [ProcessContext](#processcontext) |
 
 ## `UserContext`
 
