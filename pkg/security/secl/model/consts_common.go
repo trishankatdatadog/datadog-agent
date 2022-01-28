@@ -411,6 +411,7 @@ var (
 	vmStrings                 = map[int]string{}
 	protStrings               = map[int]string{}
 	mmapFlagStrings           = map[int]string{}
+	signalStrings             = map[int]string{}
 )
 
 // File flags
@@ -541,6 +542,16 @@ func initMMapFlagsConstants() {
 	}
 }
 
+func initSignalConstants() {
+	for k, v := range signalConstants {
+		SECLConstants[k] = &eval.IntEvaluator{Value: v}
+	}
+
+	for k, v := range signalConstants {
+		signalStrings[v] = k
+	}
+}
+
 func initConstants() {
 	initErrorConstants()
 	initOpenConstants()
@@ -556,6 +567,7 @@ func initConstants() {
 	initVMConstants()
 	initProtConstansts()
 	initMMapFlagsConstants()
+	initSignalConstants()
 }
 
 func bitmaskToStringArray(bitmask int, intToStrMap map[int]string) []string {
@@ -1370,4 +1382,11 @@ type MMapFlag int
 
 func (mmf MMapFlag) String() string {
 	return bitmaskToString(int(mmf), mmapFlagStrings)
+}
+
+// Signal represents a type of unix signal (ie, SIGKILL, SIGSTOP etc)
+type Signal int
+
+func (sig Signal) String() string {
+	return signalStrings[int(sig)]
 }

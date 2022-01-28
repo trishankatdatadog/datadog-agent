@@ -164,6 +164,11 @@ struct syscall_cache_t {
             u64 vm_protection;
             u64 req_protection;
         } mprotect;
+
+        struct {
+            u32 pid;
+            u32 type;
+        } signal;
     };
 };
 

@@ -38,6 +38,9 @@ CWS logs have the following JSON schema:
         "ptrace": {
             "$ref": "#/definitions/PTraceEvent"
         },
+        "signal": {
+            "$ref": "#/definitions/SignalEvent"
+        },
         "usr": {
             "$ref": "#/definitions/UserContext"
         },
@@ -70,6 +73,7 @@ CWS logs have the following JSON schema:
 | `mmap` | $ref | Please see [MMapEvent](#mmapevent) |
 | `mprotect` | $ref | Please see [MProtectEvent](#mprotectevent) |
 | `ptrace` | $ref | Please see [PTraceEvent](#ptraceevent) |
+| `signal` | $ref | Please see [SignalEvent](#signalevent) |
 | `usr` | $ref | Please see [UserContext](#usercontext) |
 | `process` | $ref | Please see [ProcessContext](#processcontext) |
 | `dd` | $ref | Please see [DDContext](#ddcontext) |
@@ -1169,6 +1173,37 @@ CWS logs have the following JSON schema:
 | [SELinuxBoolChange](#selinuxboolchange) |
 | [SELinuxEnforceStatus](#selinuxenforcestatus) |
 | [SELinuxBoolCommit](#selinuxboolcommit) |
+
+## `SignalEvent`
+
+
+{{< code-block lang="json" collapsible="true" >}}
+{
+    "required": [
+        "type",
+        "pid"
+    ],
+    "properties": {
+        "type": {
+            "type": "string",
+            "description": "signal type"
+        },
+        "pid": {
+            "type": "integer",
+            "description": "signal target pid"
+        }
+    },
+    "additionalProperties": false,
+    "type": "object"
+}
+
+{{< /code-block >}}
+
+| Field | Description |
+| ----- | ----------- |
+| `type` | signal type |
+| `pid` | signal target pid |
+
 
 ## `UserContext`
 

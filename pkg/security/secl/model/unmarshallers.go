@@ -654,3 +654,19 @@ func (e *MProtectEvent) UnmarshalBinary(data []byte) (int, error) {
 	e.ReqProtection = int(ByteOrder.Uint32(data[read+24 : read+32]))
 	return read + 32, nil
 }
+
+// UnmarshalBinary unmarshals a binary representation of itself
+func (e *SignalEvent) UnmarshalBinary(data []byte) (int, error) {
+	read, err := UnmarshalBinary(data, &e.SyscallEvent)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(data)-read < 8 {
+		return 0, ErrNotEnoughData
+	}
+
+	e.PID = ByteOrder.Uint32(data[read : read+4])
+	e.Type = ByteOrder.Uint32(data[read+4 : read+8])
+	return read + 8, nil
+}
