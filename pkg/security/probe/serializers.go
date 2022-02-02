@@ -240,7 +240,8 @@ type PTraceEventSerializer struct {
 	Address string                    `json:"address" jsonschema_description:"address at which the ptrace request was executed"`
 	Tracee  *ProcessContextSerializer `json:"tracee,omitempty" jsonschema_description:"process context of the tracee"`
 }
-// SignalSerializer serializes a signal event to JSON
+
+// SignalEventSerializer serializes a signal event to JSON
 type SignalEventSerializer struct {
 	Type    string                    `json:"type" jsonschema_description:"signal type"`
 	PID     uint32                    `json:"pid" jsonschema_description:"signal target pid"`
