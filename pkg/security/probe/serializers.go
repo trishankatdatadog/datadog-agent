@@ -243,9 +243,9 @@ type PTraceEventSerializer struct {
 
 // SignalEventSerializer serializes a signal event to JSON
 type SignalEventSerializer struct {
-	Type    string                    `json:"type" jsonschema_description:"signal type"`
-	PID     uint32                    `json:"pid" jsonschema_description:"signal target pid"`
-	Target  *ProcessContextSerializer `json:"target,omitempty" jsonschema_description:"process context of the signal target"`
+	Type   string                    `json:"type" jsonschema_description:"signal type"`
+	PID    uint32                    `json:"pid" jsonschema_description:"signal target pid"`
+	Target *ProcessContextSerializer `json:"target,omitempty" jsonschema_description:"process context of the signal target"`
 }
 
 // DDContextSerializer serializes a span context to JSON
@@ -562,8 +562,8 @@ func newPTraceEventSerializer(e *Event) *PTraceEventSerializer {
 
 func newSignalEventSerializer(e *Event) *SignalEventSerializer {
 	ses := &SignalEventSerializer{
-		Type:          model.Signal(e.Signal.Type).String(),
-		PID:           e.Signal.PID,
+		Type: model.Signal(e.Signal.Type).String(),
+		PID:  e.Signal.PID,
 	}
 	if e.Signal.TargetProcessCacheEntry != nil {
 		pcs := newProcessContextSerializer(e.Signal.TargetProcessCacheEntry, e, e.resolvers)
