@@ -100,9 +100,10 @@ func Configure(t *testing.T, trapConfig Config) {
 	require.NoError(t, err)
 }
 
-func sendTestV1GenericTrap(t *testing.T, trapConfig Config) *gosnmp.GoSNMP {
+func sendTestV1GenericTrap(t *testing.T, trapConfig Config, community string) *gosnmp.GoSNMP {
 	params, err := trapConfig.BuildSNMPParams()
 	require.NoError(t, err)
+	params.Community = community
 	params.Timeout = 1 * time.Second // Must be non-zero when sending traps.
 	params.Retries = 1               // Must be non-zero when sending traps.
 	params.Version = gosnmp.Version1
@@ -117,9 +118,10 @@ func sendTestV1GenericTrap(t *testing.T, trapConfig Config) *gosnmp.GoSNMP {
 	return params
 }
 
-func sendTestV1SpecificTrap(t *testing.T, trapConfig Config) *gosnmp.GoSNMP {
+func sendTestV1SpecificTrap(t *testing.T, trapConfig Config, community string) *gosnmp.GoSNMP {
 	params, err := trapConfig.BuildSNMPParams()
 	require.NoError(t, err)
+	params.Community = community
 	params.Timeout = 1 * time.Second // Must be non-zero when sending traps.
 	params.Retries = 1               // Must be non-zero when sending traps.
 	params.Version = gosnmp.Version1

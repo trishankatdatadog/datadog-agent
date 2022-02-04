@@ -14,14 +14,14 @@ import (
 )
 
 func TestServerV1GenericTrap(t *testing.T) {
-	config := Config{Port: GetPort(t)}
+	config := Config{Port: GetPort(t), CommunityStrings: []string{"public"}}
 	Configure(t, config)
 
 	err := StartServer()
 	require.NoError(t, err)
 	defer StopServer()
 
-	sendTestV1GenericTrap(t, config)
+	sendTestV1GenericTrap(t, config, "public")
 	packet := receivePacket(t)
 	require.NotNil(t, packet)
 	packet.Content.SnmpTrap.Variables = packet.Content.Variables
@@ -30,14 +30,14 @@ func TestServerV1GenericTrap(t *testing.T) {
 }
 
 func TestServerV1SpecificTrap(t *testing.T) {
-	config := Config{Port: GetPort(t)}
+	config := Config{Port: GetPort(t), CommunityStrings: []string{"public"}}
 	Configure(t, config)
 
 	err := StartServer()
 	require.NoError(t, err)
 	defer StopServer()
 
-	sendTestV1SpecificTrap(t, config)
+	sendTestV1SpecificTrap(t, config, "public")
 	packet := receivePacket(t)
 	require.NotNil(t, packet)
 	packet.Content.SnmpTrap.Variables = packet.Content.Variables

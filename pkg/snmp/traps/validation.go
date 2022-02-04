@@ -12,9 +12,8 @@ import (
 )
 
 func validatePacket(p *gosnmp.SnmpPacket, c *Config) error {
-	if p.Version != gosnmp.Version2c {
+	if p.Version == gosnmp.Version3 {
 		// v3 Packets are already decrypted and validated by gosnmp
-		// v1 Packets don't need to be validated
 		return nil
 	}
 
