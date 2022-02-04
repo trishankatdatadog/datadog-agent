@@ -36,11 +36,12 @@ type UserV3 struct {
 // YAML field tags provided for test marshalling purposes.
 // TODO: Add namespace
 type Config struct {
-	Port             uint16   `mapstructure:"port" yaml:"port"`
-	Users            []UserV3 `mapstructure:"users" yaml:"users"`
-	CommunityStrings []string `mapstructure:"community_strings" yaml:"community_strings"`
-	BindHost         string   `mapstructure:"bind_host" yaml:"bind_host"`
-	StopTimeout      int      `mapstructure:"stop_timeout" yaml:"stop_timeout"`
+	Port                  uint16   `mapstructure:"port" yaml:"port"`
+	Users                 []UserV3 `mapstructure:"users" yaml:"users"`
+	CommunityStrings      []string `mapstructure:"community_strings" yaml:"community_strings"`
+	BindHost              string   `mapstructure:"bind_host" yaml:"bind_host"`
+	StopTimeout           int      `mapstructure:"stop_timeout" yaml:"stop_timeout"`
+	AuthoritativeEngineID [28]byte `mapstructure:"-" yaml:"-"`
 }
 
 // ReadConfig builds and returns configuration from Agent configuration.
@@ -71,6 +72,8 @@ func ReadConfig() (*Config, error) {
 		c.StopTimeout = defaultStopTimeout
 	}
 
+	c.AuthoritativeEngineID = c.BuildAuthoritativeEngineID()
+
 	return &c, nil
 }
 
@@ -79,9 +82,19 @@ func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.BindHost, c.Port)
 }
 
-func (c *Config) BuildAuthoritativeEngineID() string {
-	baseBytes := []byte{0x80, 0xff, 0xff, 0xff, 0xff} // Replace last 4 bytes with Datadog PEN number
-	hostname := util.GetHostname(context.TODO())[:16]
+func (c *Config) BuildAuthoritativeEngineID() [28]byte {
+	engineID := [28]byte{}
+	// First byte is always 0x80
+	// Next four bytes are the Private Enterprise Number (set to an invalid value here)
+	copy(engineID[:5], []byte{0x80, 0xff, 0xff, 0xff, 0xff})
+	hostname, err := util.GetHostname(context.TODO())
+	if err != nil {
+		// this scenario is not likely to happen since
+		// the agent cannot start without a hostname
+		hostname = "unknown-datadog-agent"
+	}
+	copy(engineID[5:], []byte(hostname))
+	return engineID
 }
 
 // BuildV2Params returns a valid GoSNMP SNMPv2 params structure from configuration.
