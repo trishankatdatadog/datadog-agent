@@ -2834,6 +2834,42 @@ api_key:
   #   - '<COMMUNITY_1>'
   #   - '<COMMUNITY_2>'
 
+  ## @param users - list of custom objects - optional
+  ## List of SNMPv3 users that can be used to listen for traps.
+  ## NOTE: Currently the Datadog Agent only supports having a
+  ## single user in this list.
+  #
+  # users:
+
+    ## @param username - string - optional
+    ## The username used by devices when sending TRAPs to the Agent.
+    #
+    # username: <USERNAME>
+
+    ## @param authKey - string - optional
+    ## The passphrase to use with the given user and authProtocol.
+    #
+    # authKey: <AUTHENTICATION_KEY>
+
+    ## @param authProtocol - string - optional
+    ## The authentication protocol to use when listening for traps from this user.
+    ## Available options are: MD5, SHA, SHA224, SHA256, SHA384, SHA512
+    ## SNMPv3 only.
+    #
+    # authProtocol: <AUTHENTICATION_PROTOCOL>
+
+    ## @param privKey - string - optional
+    ## The passphrase to use with the given user privacy protocol.
+    #
+    # privKey: <PRIVACY_KEY>
+
+    ## @param privProtocol - string - optional
+    ## The privacy protocol to use when listening for traps from this user.
+    ## Available options are: DES, AES (128 bits), AES192, AES192C, AES256, AES256C
+    ## Defaults to DES when `privacy_key` is specified.
+    #
+    # privProtocol: <PRIVACY_PROTOCOL>
+
   ## @param bind_host - string - optional
   ## The hostname to listen on for incoming trap packets.
   ## Defaults to the global `bind_host` config option value.
