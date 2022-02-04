@@ -154,9 +154,8 @@ func (c *Config) BuildSNMPParams() (*gosnmp.GoSNMP, error) {
 		SecurityModel: gosnmp.UserSecurityModel,
 		MsgFlags:      msgFlags,
 		SecurityParameters: &gosnmp.UsmSecurityParameters{
-			UserName: user.Username,
-			// TODO: Make sure that gosnmp always uses the same engineID upon agent restarts.
-			AuthoritativeEngineID:    "\x80\x00\x4f\xb8\x05\x67\x72\x6f\x6d\x6d\x69\x74\x20",
+			UserName:                 user.Username,
+			AuthoritativeEngineID:    string(c.AuthoritativeEngineID[:]),
 			AuthenticationProtocol:   authProtocol,
 			AuthenticationPassphrase: user.AuthKey,
 			PrivacyProtocol:          privProtocol,
