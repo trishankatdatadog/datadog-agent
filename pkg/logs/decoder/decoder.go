@@ -13,7 +13,7 @@ import (
 
 	dd_conf "github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/logs/config"
-	"github.com/DataDog/datadog-agent/pkg/logs/parser"
+	"github.com/DataDog/datadog-agent/pkg/logs/internal/parsers"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
@@ -90,12 +90,12 @@ type Decoder struct {
 }
 
 // InitializeDecoder returns a properly initialized Decoder
-func InitializeDecoder(source *config.LogSource, parser parser.Parser) *Decoder {
+func InitializeDecoder(source *config.LogSource, parser parsers.Parser) *Decoder {
 	return NewDecoderWithEndLineMatcher(source, parser, &NewLineMatcher{}, nil)
 }
 
 // NewDecoderWithEndLineMatcher initialize a decoder with given endline strategy.
-func NewDecoderWithEndLineMatcher(source *config.LogSource, parser parser.Parser, matcher EndLineMatcher, multiLinePattern *regexp.Regexp) *Decoder {
+func NewDecoderWithEndLineMatcher(source *config.LogSource, parser parsers.Parser, matcher EndLineMatcher, multiLinePattern *regexp.Regexp) *Decoder {
 	inputChan := make(chan *Input)
 	outputChan := make(chan *Message)
 	lineLimit := defaultContentLenLimit
@@ -121,7 +121,7 @@ func NewDecoderWithEndLineMatcher(source *config.LogSource, parser parser.Parser
 		}
 	}
 	if lineHandler == nil {
-		if dd_conf.Datadog.GetBool("logs_config.auto_multi_line_detection") || source.Config.AutoMultiLine {
+		if source.Config.AutoMultiLineEnabled() {
 			log.Infof("Auto multi line log detection enabled")
 
 			if multiLinePattern != nil {

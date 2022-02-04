@@ -31,17 +31,16 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/embed/jmx"
 	"github.com/DataDog/datadog-agent/pkg/config"
 	remoteconfig "github.com/DataDog/datadog-agent/pkg/config/remote/service"
+	"github.com/DataDog/datadog-agent/pkg/config/resolver"
 	"github.com/DataDog/datadog-agent/pkg/config/settings"
 	"github.com/DataDog/datadog-agent/pkg/dogstatsd"
-	"github.com/DataDog/datadog-agent/pkg/epforwarder"
 	"github.com/DataDog/datadog-agent/pkg/forwarder"
 	"github.com/DataDog/datadog-agent/pkg/logs"
 	"github.com/DataDog/datadog-agent/pkg/metadata"
 	"github.com/DataDog/datadog-agent/pkg/metadata/host"
-	orchcfg "github.com/DataDog/datadog-agent/pkg/orchestrator/config"
+	"github.com/DataDog/datadog-agent/pkg/metadata/inventories"
 	"github.com/DataDog/datadog-agent/pkg/otlp"
 	"github.com/DataDog/datadog-agent/pkg/pidfile"
-	"github.com/DataDog/datadog-agent/pkg/serializer"
 	"github.com/DataDog/datadog-agent/pkg/snmp/traps"
 	"github.com/DataDog/datadog-agent/pkg/status/health"
 	"github.com/DataDog/datadog-agent/pkg/telemetry"
@@ -59,6 +58,7 @@ import (
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/cluster/ksm"
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/cluster/kubernetesapiserver"
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/cluster/orchestrator"
+	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/containerlifecycle"
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/containerd"
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/cri"
 	_ "github.com/DataDog/datadog-agent/pkg/collector/corechecks/containers/docker"
@@ -85,9 +85,9 @@ var (
 	// flags variables
 	pidfilePath string
 
-	orchestratorForwarder  *forwarder.DefaultForwarder
-	eventPlatformForwarder epforwarder.EventPlatformForwarder
-	configService          *remoteconfig.Service
+	configService *remoteconfig.Service
+
+	demux aggregator.Demultiplexer
 
 	runCmd = &cobra.Command{
 		Use:   "run",
@@ -204,7 +204,6 @@ func StartAgent() error {
 		if loggerSetupErr == nil {
 			loggerSetupErr = config.SetupJMXLogger(
 				jmxLoggerName,
-				config.Datadog.GetString("log_level"),
 				jmxLogFile,
 				syslogURI,
 				config.Datadog.GetBool("syslog_rfc"),
@@ -228,7 +227,6 @@ func StartAgent() error {
 		if loggerSetupErr == nil {
 			loggerSetupErr = config.SetupJMXLogger(
 				jmxLoggerName,
-				config.Datadog.GetString("log_level"),
 				"", // no log file on android
 				"", // no syslog on android,
 				false,
@@ -327,8 +325,7 @@ func StartAgent() error {
 
 	// start remote configuration management
 	if config.Datadog.GetBool("remote_configuration.enabled") {
-		opts := remoteconfig.Opts{}
-		configService, err = remoteconfig.NewService(opts)
+		configService, err = remoteconfig.NewService()
 		if err != nil {
 			log.Errorf("Failed to initialize config management service: %s", err)
 		} else if err := configService.Start(context.Background()); err != nil {
@@ -367,48 +364,37 @@ func StartAgent() error {
 		log.Error("Misconfiguration of agent endpoints: ", err)
 	}
 
+	forwarderOpts := forwarder.NewOptionsWithResolvers(resolver.NewSingleDomainResolvers(keysPerDomain))
 	// Enable core agent specific features like persistence-to-disk
-	options := forwarder.NewOptions(keysPerDomain)
-	options.EnabledFeatures = forwarder.SetFeature(options.EnabledFeatures, forwarder.CoreFeatures)
-
-	common.Forwarder = forwarder.NewDefaultForwarder(options)
-	log.Debugf("Starting forwarder")
-	common.Forwarder.Start() //nolint:errcheck
-	log.Debugf("Forwarder started")
-
-	// setup the orchestrator forwarder (only on cluster check runners)
-	orchestratorForwarder = orchcfg.NewOrchestratorForwarder()
-	if orchestratorForwarder != nil {
-		orchestratorForwarder.Start() //nolint:errcheck
-	}
-
-	eventPlatformForwarder = epforwarder.NewEventPlatformForwarder()
-	eventPlatformForwarder.Start()
-
-	// setup the aggregator
-	s := serializer.NewSerializer(common.Forwarder, orchestratorForwarder)
-	agg := aggregator.InitAggregator(s, eventPlatformForwarder, hostname)
-	agg.AddAgentStartupTelemetry(version.AgentVersion)
+	forwarderOpts.EnabledFeatures = forwarder.SetFeature(forwarderOpts.EnabledFeatures, forwarder.CoreFeatures)
+	opts := aggregator.DefaultDemultiplexerOptions(forwarderOpts)
+	opts.UseContainerLifecycleForwarder = config.Datadog.GetBool("container_lifecycle.enabled")
+	demux = aggregator.InitAndStartAgentDemultiplexer(opts, hostname)
+	demux.Aggregator().AddAgentStartupTelemetry(version.AgentVersion)
 
 	// start dogstatsd
 	if config.Datadog.GetBool("use_dogstatsd") {
 		var err error
-		common.DSD, err = dogstatsd.NewServer(agg, nil)
+		common.DSD, err = dogstatsd.NewServer(demux, nil)
 		if err != nil {
 			log.Errorf("Could not start dogstatsd: %s", err)
+		} else {
+			log.Debugf("dogstatsd started")
 		}
 	}
-	log.Debugf("statsd started")
 
 	// Start OTLP intake
-	if otlp.IsEnabled(config.Datadog) {
+	otlpEnabled := otlp.IsEnabled(config.Datadog)
+	inventories.SetAgentMetadata(inventories.AgentOTLPEnabled, otlpEnabled)
+	if otlpEnabled {
 		var err error
-		common.OTLP, err = otlp.BuildAndStart(common.MainCtx, config.Datadog, s)
+		common.OTLP, err = otlp.BuildAndStart(common.MainCtx, config.Datadog, demux.Serializer())
 		if err != nil {
 			log.Errorf("Could not start OTLP: %s", err)
+		} else {
+			log.Debug("OTLP pipeline started")
 		}
 	}
-	log.Debug("OTLP pipeline started")
 
 	// Start SNMP trap server
 	if traps.IsEnabled() {
@@ -448,7 +434,7 @@ func StartAgent() error {
 	util.LogVersionHistory()
 
 	// create and setup the Autoconfig instance
-	common.LoadComponents(config.Datadog.GetString("confd_path"))
+	common.LoadComponents(common.MainCtx, config.Datadog.GetString("confd_path"))
 	// start the autoconfig, this will immediately run any configured check
 	common.StartAutoConfig()
 
@@ -456,7 +442,7 @@ func StartAgent() error {
 	misconfig.ToLog()
 
 	// setup the metadata collector
-	common.MetadataScheduler = metadata.NewScheduler(s)
+	common.MetadataScheduler = metadata.NewScheduler(demux)
 	if err := metadata.SetupMetadataCollection(common.MetadataScheduler, metadata.AllDefaultCollectors); err != nil {
 		return err
 	}
@@ -503,16 +489,11 @@ func StopAgent() {
 	api.StopServer()
 	clcrunnerapi.StopCLCRunnerServer()
 	jmx.StopJmxfetch()
-	aggregator.StopDefaultAggregator()
-	if common.Forwarder != nil {
-		common.Forwarder.Stop()
+
+	if demux != nil {
+		demux.Stop(true)
 	}
-	if orchestratorForwarder != nil {
-		orchestratorForwarder.Stop()
-	}
-	if eventPlatformForwarder != nil {
-		eventPlatformForwarder.Stop()
-	}
+
 	logs.Stop()
 	gui.StopGUIServer()
 	profiler.Stop()

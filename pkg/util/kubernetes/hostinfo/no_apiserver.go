@@ -3,10 +3,15 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build !kubeapiserver
 // +build !kubeapiserver
 
 package hostinfo
 
 func apiserverNodeLabels(nodeName string) (map[string]string, error) {
+	return nil, nil
+}
+
+func apiserverNodeAnnotations(nodeName string) (map[string]string, error) {
 	return nil, nil
 }

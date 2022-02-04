@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build linux
 // +build linux
 
 package module
@@ -14,7 +15,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,12 +22,10 @@ import (
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
+	"github.com/skydive-project/go-debouncer"
 	"google.golang.org/grpc"
 
 	"github.com/DataDog/datadog-agent/cmd/system-probe/api/module"
-	"github.com/DataDog/datadog-agent/pkg/config/remote/service"
-	"github.com/DataDog/datadog-agent/pkg/config/remote/service/tuf"
-	"github.com/DataDog/datadog-agent/pkg/proto/pbgo"
 	sapi "github.com/DataDog/datadog-agent/pkg/security/api"
 	sconfig "github.com/DataDog/datadog-agent/pkg/security/config"
 	skernel "github.com/DataDog/datadog-agent/pkg/security/ebpf/kernel"
@@ -60,11 +58,11 @@ type Module struct {
 	sigupChan        chan os.Signal
 	ctx              context.Context
 	cancelFnc        context.CancelFunc
-	cancelSubscriber context.CancelFunc
 	rulesLoaded      func(rs *rules.RuleSet)
 	policiesVersions []string
 
 	selfTester *SelfTester
+	reloader   *debouncer.Debouncer
 }
 
 // Register the runtime security agent module
@@ -96,6 +94,11 @@ func (m *Module) sanityChecks() error {
 	if m.config.ERPCDentryResolutionEnabled && isWriteUserNotSupported {
 		log.Warn("eRPC path resolution is not supported in lockdown `integrity` mode")
 		m.config.ERPCDentryResolutionEnabled = false
+	}
+
+	// enable runtime compiled constants on COS by default
+	if !m.config.RuntimeCompiledConstantsIsSet && version.IsCOSKernel() {
+		m.config.EnableRuntimeCompiledConstants = true
 	}
 
 	return nil
@@ -150,6 +153,8 @@ func (m *Module) Start() error {
 		return errors.Wrap(err, "failed to start probe")
 	}
 
+	m.reloader.Start()
+
 	if err := m.Reload(); err != nil {
 		return err
 	}
@@ -170,37 +175,9 @@ func (m *Module) Start() error {
 		defer m.wg.Done()
 
 		for range m.sigupChan {
-			log.Info("Reload configuration")
-
-			if err := m.Reload(); err != nil {
-				log.Errorf("failed to reload configuration: %s", err)
-			}
+			m.triggerReload()
 		}
 	}()
-
-	if m.config.EnableRemoteConfig {
-		cancelSubscriber, err := service.NewGRPCSubscriber(pbgo.Product_RUNTIME_SECURITY, func(config *pbgo.ConfigResponse) error {
-			log.Infof("Fetched config version %d from remote config management", config.DirectoryTargets.Version)
-
-			for _, targetFile := range config.TargetFiles {
-				policyFile, err := os.Create(filepath.Join(m.config.PoliciesDir, filepath.Base(tuf.TrimHash(targetFile.Path))))
-				if err != nil {
-					return err
-				}
-
-				if _, err := policyFile.Write(targetFile.Raw); err != nil {
-					return err
-				}
-			}
-
-			return m.Reload()
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to subscribe to remote config management")
-		}
-		m.cancelSubscriber = cancelSubscriber
-	}
-
 	return nil
 }
 
@@ -274,6 +251,13 @@ func getPoliciesVersions(rs *rules.RuleSet) []string {
 	return versions
 }
 
+func (m *Module) triggerReload() {
+	log.Info("Reload configuration")
+	if err := m.Reload(); err != nil {
+		log.Errorf("failed to reload configuration: %s", err)
+	}
+}
+
 // Reload the rule set
 func (m *Module) Reload() error {
 	m.Lock()
@@ -285,24 +269,25 @@ func (m *Module) Reload() error {
 	policiesDir := m.config.PoliciesDir
 	rsa := sprobe.NewRuleSetApplier(m.config, m.probe)
 
-	newRuleSetOpts := func() *rules.Opts {
-		return rules.NewOptsWithParams(
-			model.SECLConstants,
-			sprobe.SECLVariables,
-			sprobe.SupportedDiscarders,
-			m.getEventTypeEnabled(),
-			sprobe.AllCustomRuleIDs(),
-			model.SECLLegacyAttributes,
-			&seclog.PatternLogger{})
-	}
-
-	ruleSet := m.probe.NewRuleSet(newRuleSetOpts())
-
-	loadErr := rules.LoadPolicies(policiesDir, ruleSet)
+	var opts rules.Opts
+	opts.
+		WithConstants(model.SECLConstants).
+		WithVariables(model.SECLVariables).
+		WithSupportedDiscarders(sprobe.SupportedDiscarders).
+		WithEventTypeEnabled(m.getEventTypeEnabled()).
+		WithReservedRuleIDs(sprobe.AllCustomRuleIDs()).
+		WithLegacyFields(model.SECLLegacyFields).
+		WithLogger(&seclog.PatternLogger{})
 
 	model := &model.Model{}
-	approverRuleSet := rules.NewRuleSet(model, model.NewEvent, newRuleSetOpts())
+	approverRuleSet := rules.NewRuleSet(model, model.NewEvent, &opts)
 	loadApproversErr := rules.LoadPolicies(policiesDir, approverRuleSet)
+
+	// switch SECLVariables to use the real Event structure and not the mock model.Event one
+	opts.WithVariables(sprobe.SECLVariables)
+
+	ruleSet := m.probe.NewRuleSet(&opts)
+	loadErr := rules.LoadPolicies(policiesDir, ruleSet)
 
 	if loadErr.ErrorOrNil() != nil {
 		logMultiErrors("error while loading policies: %+v", loadErr)
@@ -335,6 +320,7 @@ func (m *Module) Reload() error {
 	currentRuleSet := 1 - atomic.LoadUint64(&m.currentRuleSet)
 	m.ruleSets[currentRuleSet] = ruleSet
 	atomic.StoreUint64(&m.currentRuleSet, currentRuleSet)
+	m.ruleSets[1-currentRuleSet] = nil
 
 	// analyze the ruleset, push default policies in the kernel and generate the policy report
 	report, err := rsa.Apply(ruleSet, approvers)
@@ -360,10 +346,9 @@ func (m *Module) Reload() error {
 
 // Close the module
 func (m *Module) Close() {
+	m.reloader.Stop()
+
 	close(m.sigupChan)
-	if m.cancelSubscriber != nil {
-		m.cancelSubscriber()
-	}
 	m.cancelFnc()
 
 	if m.grpcServer != nil {
@@ -567,6 +552,7 @@ func NewModule(cfg *sconfig.Config) (module.Module, error) {
 		selfTester:     selfTester,
 	}
 	m.apiServer.module = m
+	m.reloader = debouncer.New(3*time.Second, m.triggerReload)
 
 	seclog.SetPatterns(cfg.LogPatterns)
 

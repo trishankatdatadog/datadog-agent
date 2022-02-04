@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
 package listeners
 
 import (
@@ -32,8 +37,8 @@ type service struct {
 
 var _ Service = &service{}
 
-// GetEntity returns the AD entity ID of the service.
-func (s *service) GetEntity() string {
+// GetServiceID returns the AD entity ID of the service.
+func (s *service) GetServiceID() string {
 	switch e := s.entity.(type) {
 	case *workloadmeta.Container:
 		return containers.BuildEntityName(string(e.Runtime), e.ID)
@@ -140,8 +145,8 @@ func svcEqual(a, b Service) bool {
 		errB error
 	)
 
-	entityA := a.GetEntity()
-	entityB := b.GetEntity()
+	entityA := a.GetServiceID()
+	entityB := b.GetServiceID()
 	if entityA != entityB {
 		return false
 	}

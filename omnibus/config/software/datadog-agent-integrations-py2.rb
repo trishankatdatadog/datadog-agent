@@ -71,14 +71,6 @@ if suse?
 end
 
 if osx?
-  # Blacklist lxml as it fails MacOS notarization: the etree.cpython-37m-darwin.so and objectify.cpython-37m-darwin.so
-  # binaries were built with a MacOS SDK lower than 10.9.
-  # This can be removed once a new lxml version with binaries built with a newer SDK is available.
-  blacklist_packages.push(/^lxml==/)
-
-  # Blacklist ibm_was, which depends on lxml
-  blacklist_folders.push('ibm_was')
-
   # Blacklist aerospike, new version 3.10 is not supported on MacOS yet
   blacklist_folders.push('aerospike')
 
@@ -107,6 +99,9 @@ filtered_agent_requirements_in = 'agent_requirements-py2.in'
 agent_requirements_in = 'agent_requirements.in'
 
 build do
+  license "BSD-3-Clause"
+  license_file "./LICENSE"
+
   # The dir for confs
   if osx?
     conf_dir = "#{install_dir}/etc/conf.d"
@@ -404,10 +399,6 @@ build do
       else
         patch :source => "create-regex-at-runtime.patch", :target => "#{install_dir}/embedded/lib/python2.7/site-packages/yaml/reader.py"
         patch :source => "tuf-0.17.0-cve-2021-41131.patch", :target => "#{install_dir}/embedded/lib/python2.7/site-packages/tuf/client/updater.py"
-      end
-
-      if linux?
-        patch :source => "psutil-pr2000.patch", :target => "#{install_dir}/embedded/lib/python2.7/site-packages/psutil/_pslinux.py"
       end
 
       # Run pip check to make sure the agent's python environment is clean, all the dependencies are compatible

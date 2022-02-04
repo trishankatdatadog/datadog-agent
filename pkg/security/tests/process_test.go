@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build functionaltests
 // +build functionaltests
 
 package tests
@@ -61,7 +62,7 @@ func TestProcess(t *testing.T) {
 }
 
 func TestProcessContext(t *testing.T) {
-	proc, err := process.NewProcess(int32(os.Getpid()))
+	proc, err := process.NewProcess(utils.Getpid())
 	if err != nil {
 		t.Fatalf("unable to find proc entry: %s", err)
 	}
@@ -109,6 +110,10 @@ func TestProcessContext(t *testing.T) {
 		{
 			ID:         "test_rule_tty",
 			Expression: `open.file.path == "{{.Root}}/test-process-tty" && open.flags & O_CREAT == 0`,
+		},
+		{
+			ID:         "test_rule_ancestors_args",
+			Expression: `open.file.path == "{{.Root}}/test-ancestors-args" && process.ancestors.args_flags == "c" && process.ancestors.args_flags == "x"`,
 		},
 	}
 
@@ -192,6 +197,12 @@ func TestProcessContext(t *testing.T) {
 			_ = cmd.Run()
 			return nil
 		}, func(event *sprobe.Event, rule *rules.Rule) {
+			argv0, err := event.GetFieldValue("exec.argv0")
+			if err != nil {
+				t.Errorf("not able to get argv0")
+			}
+			assert.Equal(t, "ls", argv0, "incorrect argv0: %s", argv0)
+
 			// args
 			args, err := event.GetFieldValue("exec.args")
 			if err != nil || len(args.(string)) == 0 {
@@ -252,10 +263,7 @@ func TestProcessContext(t *testing.T) {
 
 		test.WaitSignal(t, func() error {
 			cmd := exec.Command(lsExecutable, "-ll")
-			if err = cmd.Run(); err != nil {
-				return err
-			}
-			return nil
+			return cmd.Run()
 		}, func(event *sprobe.Event, rule *rules.Rule) {
 			assertTriggeredRule(t, rule, "test_rule_argv")
 		})
@@ -266,10 +274,7 @@ func TestProcessContext(t *testing.T) {
 
 		test.WaitSignal(t, func() error {
 			cmd := exec.Command(lsExecutable, "-ls", "--escape")
-			if err = cmd.Run(); err != nil {
-				return err
-			}
-			return nil
+			return cmd.Run()
 		}, func(event *sprobe.Event, rule *rules.Rule) {
 			assertTriggeredRule(t, rule, "test_rule_args_flags")
 		})
@@ -311,6 +316,12 @@ func TestProcessContext(t *testing.T) {
 			argv := strings.Split(args.(string), " ")
 			assert.Equal(t, 2, len(argv), "incorrect number of args: %s", argv)
 			assert.Equal(t, true, strings.HasSuffix(argv[1], "..."), "args not truncated")
+
+			argv0, err := event.GetFieldValue("exec.argv0")
+			if err != nil {
+				t.Errorf("not able to get argv0")
+			}
+			assert.Equal(t, "ls", argv0, "incorrect argv0: %s", argv0)
 		})
 
 		// number of args overflow
@@ -432,7 +443,7 @@ func TestProcessContext(t *testing.T) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc("sh", args, nil)
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s: %s", out, err)
+				return fmt.Errorf("%s: %w", out, err)
 			}
 			return nil
 		}, func(event *sprobe.Event, rule *rules.Rule) {
@@ -460,7 +471,7 @@ func TestProcessContext(t *testing.T) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc(shell, args, nil)
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s: %s", out, err)
+				return fmt.Errorf("%s: %w", out, err)
 			}
 			return nil
 		}, func(event *sprobe.Event, rule *rules.Rule) {
@@ -488,7 +499,7 @@ func TestProcessContext(t *testing.T) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc(shell, args, envs)
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s: %s", out, err)
+				return fmt.Errorf("%s: %w", out, err)
 			}
 			return nil
 		}, func(event *sprobe.Event, rule *rules.Rule) {
@@ -500,6 +511,30 @@ func TestProcessContext(t *testing.T) {
 
 			service := event.GetProcessServiceTag()
 			assert.Equal(t, service, "myservice")
+		})
+	})
+
+	test.Run(t, "ancestors-args", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+		testFile, _, err := test.Path("test-ancestors-args")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		shell, executable := "sh", "touch"
+		args := []string{"-x", "-c", "$(" + executable + " " + testFile + ")"}
+
+		test.WaitSignal(t, func() error {
+			cmd := cmdFunc(shell, args, nil)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("%s: %w", out, err)
+			}
+			return nil
+		}, func(event *sprobe.Event, rule *rules.Rule) {
+			assert.Equal(t, "test_rule_ancestors_args", rule.ID, "wrong rule triggered")
+
+			if !validateExecSchema(t, event) {
+				t.Error(event.String())
+			}
 		})
 	})
 }
@@ -631,38 +666,16 @@ func TestProcessMetadata(t *testing.T) {
 
 	t.Run("credentials", func(t *testing.T) {
 		test.WaitSignal(t, func() error {
-			errChan := make(chan error, 1)
-			var wg sync.WaitGroup
-			wg.Add(1)
-
-			go func() {
-				defer wg.Done()
-
-				runtime.LockOSThread()
-				// do not unlock, we want the thread to be killed when exiting the goroutine
-
-				if _, _, errno := syscall.Syscall(syscall.SYS_SETREGID, 2001, 2001, 0); errno != 0 {
-					errChan <- error(errno)
-					return
-				}
-				if _, _, errno := syscall.Syscall(syscall.SYS_SETREUID, 1001, 1001, 0); errno != 0 {
-					errChan <- error(errno)
-					return
-				}
-
-				if _, err = syscall.ForkExec(testFile, []string{}, nil); err != nil {
-					errChan <- err
-				}
-			}()
-
-			wg.Wait()
-
-			select {
-			case err = <-errChan:
-				return err
-			default:
+			attr := &syscall.ProcAttr{
+				Sys: &syscall.SysProcAttr{
+					Credential: &syscall.Credential{
+						Uid: 1001,
+						Gid: 2001,
+					},
+				},
 			}
-			return nil
+			_, err := syscall.ForkExec(testFile, []string{}, attr)
+			return err
 		}, func(event *sprobe.Event, rule *rules.Rule) {
 			assert.Equal(t, "exec", event.GetType(), "wrong event type")
 			assert.Equal(t, 1001, int(event.Exec.Credentials.UID), "wrong uid")
@@ -760,7 +773,7 @@ func testProcessEEExit(t *testing.T, pid uint32, test *testModule) {
 		resolvers := test.probe.GetResolvers()
 		entry := resolvers.ProcessResolver.Get(pid)
 		if entry != nil {
-			return fmt.Errorf("the process cache entry was not deleted from the user space cache")
+			return errors.New("the process cache entry was not deleted from the user space cache")
 		}
 
 		return nil

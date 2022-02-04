@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
 package devicecheck
 
 import (
@@ -8,7 +13,10 @@ import (
 
 	"github.com/cihub/seelog"
 
+	"github.com/DataDog/datadog-agent/pkg/config"
+	"github.com/DataDog/datadog-agent/pkg/metadata/externalhost"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
+	"github.com/DataDog/datadog-agent/pkg/util"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/snmp/checkconfig"
@@ -37,10 +45,10 @@ type DeviceCheck struct {
 }
 
 // NewDeviceCheck returns a new DeviceCheck
-func NewDeviceCheck(config *checkconfig.CheckConfig, ipAddress string) (*DeviceCheck, error) {
+func NewDeviceCheck(config *checkconfig.CheckConfig, ipAddress string, sessionFactory session.Factory) (*DeviceCheck, error) {
 	newConfig := config.CopyWithNewIP(ipAddress)
 
-	sess, err := session.NewSession(newConfig)
+	sess, err := sessionFactory(newConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure session: %s", err)
 	}
@@ -66,12 +74,17 @@ func (d *DeviceCheck) GetIDTags() []string {
 	return d.config.DeviceIDTags
 }
 
-// GetHostname returns DeviceID as hostname if UseDeviceIDAsHostname is true
-func (d *DeviceCheck) GetHostname() string {
+// GetDeviceHostname returns DeviceID as hostname if UseDeviceIDAsHostname is true
+func (d *DeviceCheck) GetDeviceHostname() (string, error) {
 	if d.config.UseDeviceIDAsHostname {
-		return deviceHostnamePrefix + d.config.DeviceID
+		hostname := deviceHostnamePrefix + d.config.DeviceID
+		normalizedHostname, err := util.NormalizeHost(hostname)
+		if err != nil {
+			return "", err
+		}
+		return normalizedHostname, nil
 	}
-	return ""
+	return "", nil
 }
 
 // Run executes the check
@@ -103,12 +116,24 @@ func (d *DeviceCheck) Run(collectionTime time.Time) error {
 		// `checkSender.checkTags` are added for metrics, service checks, events only.
 		// Note that we don't add some extra tags like `service` tag that might be present in `checkSender.checkTags`.
 		deviceMetadataTags := append(common.CopyStrings(tags), d.config.InstanceTags...)
+		deviceMetadataTags = append(deviceMetadataTags, common.GetAgentVersionTag())
 
 		d.sender.ReportNetworkDeviceMetadata(d.config, values, deviceMetadataTags, collectionTime, deviceStatus)
 	}
 
 	d.submitTelemetryMetrics(startTime, tags)
+	d.setDeviceHostExternalTags()
 	return checkErr
+}
+
+func (d *DeviceCheck) setDeviceHostExternalTags() {
+	deviceHostname, err := d.GetDeviceHostname()
+	if deviceHostname == "" || err != nil {
+		return
+	}
+	agentTags := config.GetConfiguredTags(false)
+	log.Debugf("Set external tags for device host, host=`%s`, agentTags=`%v`", deviceHostname, agentTags)
+	externalhost.SetExternalTags(deviceHostname, common.SnmpExternalTagsSourceType, agentTags)
 }
 
 func (d *DeviceCheck) getValuesAndTags(staticTags []string) (bool, []string, *valuestore.ResultValueStore, error) {
@@ -188,7 +213,7 @@ func (d *DeviceCheck) doAutodetectProfile(sess session.Session) error {
 }
 
 func (d *DeviceCheck) submitTelemetryMetrics(startTime time.Time, tags []string) {
-	newTags := append(common.CopyStrings(tags), snmpLoaderTag)
+	newTags := append(common.CopyStrings(tags), snmpLoaderTag, common.GetAgentVersionTag())
 
 	d.sender.Gauge("snmp.devices_monitored", float64(1), newTags)
 

@@ -4,8 +4,15 @@
 # Copyright 2016-present Datadog, Inc.
 require "./lib/ostools.rb"
 
-name 'agent'
-package_name 'datadog-agent'
+flavor = ENV['AGENT_FLAVOR']
+
+if flavor.nil? || flavor == 'base'
+  name 'agent'
+  package_name 'datadog-agent'
+else
+  name "agent-#{flavor}"
+  package_name "datadog-#{flavor}-agent"
+end
 license "Apache-2.0"
 license_file "../LICENSE"
 
@@ -22,6 +29,25 @@ if ohai['platform'] == "windows"
 else
   if redhat? || suse?
     maintainer 'Datadog, Inc <package@datadoghq.com>'
+
+    # NOTE: with script dependencies, we only care about preinst/postinst/posttrans,
+    # because these would be used in a kickstart during package installation phase.
+    # All of the packages that we depend on in prerm/postrm scripts always have to be
+    # installed on all distros that we support, so we don't have to depend on them
+    # explicitly.
+
+    # postinst and posttrans scripts use a subset of preinst script deps, so we don't
+    # have to list them, because they'll already be there because of preinst
+    runtime_script_dependency :pre, "coreutils"
+    runtime_script_dependency :pre, "findutils"
+    runtime_script_dependency :pre, "grep"
+    if redhat?
+      runtime_script_dependency :pre, "glibc-common"
+      runtime_script_dependency :pre, "shadow-utils"
+    else
+      runtime_script_dependency :pre, "glibc"
+      runtime_script_dependency :pre, "shadow"
+    end
   else
     maintainer 'Datadog Packages <package@datadoghq.com>'
   end
@@ -258,12 +284,6 @@ if linux?
     extra_package_file "/etc/init.d/datadog-agent-trace"
     extra_package_file "/etc/init.d/datadog-agent-security"
   end
-  if suse?
-    extra_package_file "/etc/init.d/datadog-agent"
-    extra_package_file "/etc/init.d/datadog-agent-process"
-    extra_package_file "/etc/init.d/datadog-agent-trace"
-    extra_package_file "/etc/init.d/datadog-agent-security"
-  end
   extra_package_file "#{systemd_directory}/datadog-agent.service"
   extra_package_file "#{systemd_directory}/datadog-agent-process.service"
   extra_package_file "#{systemd_directory}/datadog-agent-sysprobe.service"
@@ -273,6 +293,11 @@ if linux?
   extra_package_file '/usr/bin/dd-agent'
   extra_package_file '/var/log/datadog/'
 end
+
+# default package_scripts_path and resource_path are based on project name,
+# but we change the name based on flavor, so let's hardcode it to "agent"
+package_scripts_path "#{Omnibus::Config.project_root}/package-scripts/agent"
+resources_path "#{Omnibus::Config.project_root}/resources/agent"
 
 exclude '\.git*'
 exclude 'bundler\/git'

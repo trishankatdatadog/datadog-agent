@@ -1,3 +1,9 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
+//go:build linux_bpf
 // +build linux_bpf
 
 //go:generate go run ../../../../ebpf/include_headers.go ../c/runtime/oom-kill-kern.c ../../../../ebpf/bytecode/build/runtime/oom-kill.c ../../../../ebpf/c
@@ -12,8 +18,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	bpflib "github.com/DataDog/ebpf"
-	"github.com/DataDog/ebpf/manager"
+	manager "github.com/DataDog/ebpf-manager"
+	bpflib "github.com/cilium/ebpf"
 
 	"github.com/DataDog/datadog-agent/pkg/ebpf"
 	"github.com/DataDog/datadog-agent/pkg/ebpf/bytecode/runtime"
@@ -42,7 +48,7 @@ func NewOOMKillProbe(cfg *ebpf.Config) (*OOMKillProbe, error) {
 
 	probes := []*manager.Probe{
 		{
-			Section: "kprobe/oom_kill_process",
+			ProbeIdentificationPair: manager.ProbeIdentificationPair{EBPFSection: "kprobe/oom_kill_process", EBPFFuncName: "kprobe__oom_kill_process", UID: "oom"},
 		},
 	}
 
@@ -107,7 +113,7 @@ func (k *OOMKillProbe) GetAndFlush() (results []OOMKillStats) {
 }
 
 func convertStats(in C.struct_oom_stats) (out OOMKillStats) {
-	out.ContainerID = C.GoString(&in.cgroup_name[0])
+	out.CgroupName = C.GoString(&in.cgroup_name[0])
 	out.Pid = uint32(in.pid)
 	out.TPid = uint32(in.tpid)
 	out.FComm = C.GoString(&in.fcomm[0])

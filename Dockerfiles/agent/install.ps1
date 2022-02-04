@@ -32,17 +32,6 @@ if ("$env:WITH_JMX" -ne "false") {
     $Env:Path="$Env:Path;C:/java/bin"
 }
 
-Expand-Archive datadog-agent-latest.amd64.zip
-Remove-Item datadog-agent-latest.amd64.zip
-
-Get-ChildItem -Path datadog-agent-* | Rename-Item -NewName "Datadog Agent"
-
-New-Item -ItemType directory -Path "C:/Program Files/Datadog"
-Move-Item "Datadog Agent" "C:/Program Files/Datadog/"
-
-New-Item -ItemType directory -Path 'C:/ProgramData/Datadog'
-Move-Item "C:/Program Files/Datadog/Datadog Agent/EXAMPLECONFSLOCATION" "C:/ProgramData/Datadog/conf.d"
-
 $services = [ordered]@{
   "datadogagent" = "C:\Program Files\Datadog\Datadog Agent\bin\agent.exe",@()
   "datadog-process-agent" = "C:\Program Files\Datadog\Datadog Agent\bin\agent\process-agent.exe",@("datadogagent")
@@ -52,7 +41,6 @@ $services = [ordered]@{
 foreach ($s in $services.Keys) {
     Install-Service -SvcName $s -BinPath $services[$s][0] $services[$s][1]
 }
-
 
 # Allow to run agent binaries as `agent`
 setx /m PATH "$Env:Path;C:/Program Files/Datadog/Datadog Agent/bin;C:/Program Files/Datadog/Datadog Agent/bin/agent"
@@ -66,7 +54,7 @@ $Env:DOCKER_DD_AGENT="true"
 Write-Output @"
 ---
 install_method:
-  tool: docker
-  tool_version: docker-win-$env:VARIANT
-  installer_version: docker-win-$env:VARIANT
+  tool: docker-win
+  tool_version: docker-win-$env:INSTALL_INFO
+  installer_version: docker-win-$env:INSTALL_INFO
 "@ > C:/ProgramData/Datadog/install_info

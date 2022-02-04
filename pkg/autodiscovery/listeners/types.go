@@ -24,7 +24,7 @@ type ContainerPort struct {
 // It should be matched with a check template by the ConfigResolver using the
 // ADIdentifiers field.
 type Service interface {
-	GetEntity() string                                   // unique entity name
+	GetServiceID() string                                // unique service name
 	GetTaggerEntity() string                             // tagger entity name
 	GetADIdentifiers(context.Context) ([]string, error)  // identifiers on which templates will be matched
 	GetHosts(context.Context) (map[string]string, error) // network --> IP address
@@ -48,8 +48,13 @@ type ServiceListener interface {
 	Stop()
 }
 
+// Config represents autodiscovery listener config
+type Config interface {
+	IsProviderEnabled(string) bool
+}
+
 // ServiceListenerFactory builds a service listener
-type ServiceListenerFactory func() (ServiceListener, error)
+type ServiceListenerFactory func(Config) (ServiceListener, error)
 
 // ServiceListenerFactories holds the registered factories
 var ServiceListenerFactories = make(map[string]ServiceListenerFactory)
@@ -58,10 +63,12 @@ var ServiceListenerFactories = make(map[string]ServiceListenerFactory)
 func Register(name string, factory ServiceListenerFactory) {
 	if factory == nil {
 		log.Warnf("Service listener factory %s does not exist.", name)
+		return
 	}
 	_, registered := ServiceListenerFactories[name]
 	if registered {
 		log.Errorf("Service listener factory %s already registered. Ignoring.", name)
+		return
 	}
 	ServiceListenerFactories[name] = factory
 }

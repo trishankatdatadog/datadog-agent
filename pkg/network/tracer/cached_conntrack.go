@@ -1,3 +1,9 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
+//go:build linux_bpf
 // +build linux_bpf
 
 package tracer
@@ -71,14 +77,14 @@ func (cache *cachedConntrack) exists(c *network.ConnectionStats, netns uint32, p
 		protoNumber = unix.IPPROTO_TCP
 	}
 
-	srcBuf := util.IPBufferPool.Get().([]byte)
-	dstBuf := util.IPBufferPool.Get().([]byte)
+	srcBuf := util.IPBufferPool.Get().(*[]byte)
+	dstBuf := util.IPBufferPool.Get().(*[]byte)
 	defer func() {
 		util.IPBufferPool.Put(srcBuf)
 		util.IPBufferPool.Put(dstBuf)
 	}()
 
-	srcAddr, dstAddr := util.NetIPFromAddress(c.Source, srcBuf), util.NetIPFromAddress(c.Dest, dstBuf)
+	srcAddr, dstAddr := util.NetIPFromAddress(c.Source, *srcBuf), util.NetIPFromAddress(c.Dest, *dstBuf)
 	srcPort, dstPort := c.SPort, c.DPort
 
 	conn := netlink.Con{

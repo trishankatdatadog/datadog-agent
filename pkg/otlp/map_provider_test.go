@@ -9,7 +9,6 @@
 package otlp
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,6 +52,7 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"service": map[string]interface{}{
+					"telemetry": map[string]interface{}{"metrics": map[string]interface{}{"level": "none"}},
 					"pipelines": map[string]interface{}{
 						"traces": map[string]interface{}{
 							"receivers": []interface{}{"otlp"},
@@ -92,7 +92,9 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"processors": map[string]interface{}{
-					"batch": nil,
+					"batch": map[string]interface{}{
+						"timeout": "10s",
+					},
 				},
 				"exporters": map[string]interface{}{
 					"otlp": map[string]interface{}{
@@ -116,6 +118,7 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"service": map[string]interface{}{
+					"telemetry": map[string]interface{}{"metrics": map[string]interface{}{"level": "none"}},
 					"pipelines": map[string]interface{}{
 						"traces": map[string]interface{}{
 							"receivers": []interface{}{"otlp"},
@@ -159,6 +162,7 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"service": map[string]interface{}{
+					"telemetry": map[string]interface{}{"metrics": map[string]interface{}{"level": "none"}},
 					"pipelines": map[string]interface{}{
 						"traces": map[string]interface{}{
 							"receivers": []interface{}{"otlp"},
@@ -197,7 +201,9 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"processors": map[string]interface{}{
-					"batch": nil,
+					"batch": map[string]interface{}{
+						"timeout": "10s",
+					},
 				},
 				"exporters": map[string]interface{}{
 					"serializer": map[string]interface{}{
@@ -215,6 +221,7 @@ func TestNewMap(t *testing.T) {
 					},
 				},
 				"service": map[string]interface{}{
+					"telemetry": map[string]interface{}{"metrics": map[string]interface{}{"level": "none"}},
 					"pipelines": map[string]interface{}{
 						"metrics": map[string]interface{}{
 							"receivers":  []interface{}{"otlp"},
@@ -229,8 +236,7 @@ func TestNewMap(t *testing.T) {
 
 	for _, testInstance := range tests {
 		t.Run(testInstance.name, func(t *testing.T) {
-			cfgProvider := newMapProvider(testInstance.pcfg)
-			cfg, err := cfgProvider.Get(context.Background())
+			cfg, err := buildMap(testInstance.pcfg)
 			require.NoError(t, err)
 			tcfg := config.NewMapFromStringMap(testInstance.ocfg)
 			assert.Equal(t, tcfg.ToStringMap(), cfg.ToStringMap())
@@ -239,7 +245,7 @@ func TestNewMap(t *testing.T) {
 }
 
 func TestUnmarshal(t *testing.T) {
-	mapProvider := newMapProvider(PipelineConfig{
+	cfg, err := buildMap(PipelineConfig{
 		OTLPReceiverConfig: testutil.OTLPConfigFromPorts("localhost", 4317, 4318),
 		TracePort:          5001,
 		MetricsEnabled:     true,
@@ -256,13 +262,11 @@ func TestUnmarshal(t *testing.T) {
 			},
 		},
 	})
-	configMap, err := mapProvider.Get(context.Background())
 	require.NoError(t, err)
-
 	components, err := getComponents(&serializer.MockSerializer{})
 	require.NoError(t, err)
 
 	cu := configunmarshaler.NewDefault()
-	_, err = cu.Unmarshal(configMap, components)
+	_, err = cu.Unmarshal(cfg, components)
 	require.NoError(t, err)
 }

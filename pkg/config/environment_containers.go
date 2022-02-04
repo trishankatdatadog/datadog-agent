@@ -134,14 +134,17 @@ func detectContainerd(features FeatureMap) {
 			features[Containerd] = struct{}{}
 		}
 	}
+
+	// Merge containerd_namespace with containerd_namespaces
+	namespaces := merge(Datadog.GetStringSlice("containerd_namespaces"), Datadog.GetStringSlice("containerd_namespace"))
+	AddOverride("containerd_namespace", namespaces)
+	AddOverride("containerd_namespaces", namespaces)
 }
 
 func isCriSupported() bool {
 	// Containerd support was historically meant for K8S
 	// However, containerd is now used standalone elsewhere.
-	// TODO: Consider having a dedicated setting for containerd standalone
-	// Also, cri is not enabled on Windows (check build_tags.py).
-	return IsKubernetes() && runtime.GOOS != "windows"
+	return IsKubernetes()
 }
 
 func detectFargate(features FeatureMap) {
@@ -216,4 +219,20 @@ func getDefaultPodmanPaths() []string {
 		paths = append(paths, path.Join(prefix, defaultPodmanContainersStoragePath))
 	}
 	return paths
+}
+
+// merge merges and dedupes 2 slices without changing order
+func merge(s1, s2 []string) []string {
+	dedupe := map[string]struct{}{}
+	merged := []string{}
+
+	for _, elem := range append(s1, s2...) {
+		if _, seen := dedupe[elem]; !seen {
+			merged = append(merged, elem)
+		}
+
+		dedupe[elem] = struct{}{}
+	}
+
+	return merged
 }

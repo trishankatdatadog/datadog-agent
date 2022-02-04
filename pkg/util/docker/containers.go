@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build docker
 // +build docker
 
 package docker
@@ -228,7 +229,15 @@ func (d *DockerUtil) dockerContainers(ctx context.Context, cfg *ContainerListCon
 		}
 
 		pauseContainerExcluded := config.Datadog.GetBool("exclude_pause_container") && containers.IsPauseContainer(c.Labels)
-		excluded := pauseContainerExcluded || d.cfg.filter.IsExcluded(c.Names[0], image, c.Labels["io.kubernetes.pod.namespace"])
+
+		// Containers don't have a name when they're stuck in the "Removal in progress" state.
+		// Ref: https://github.com/DataDog/datadog-agent/issues/9516
+		containerName := ""
+		if len(c.Names) > 0 {
+			containerName = c.Names[0]
+		}
+
+		excluded := pauseContainerExcluded || d.cfg.filter.IsExcluded(containerName, image, c.Labels["io.kubernetes.pod.namespace"])
 		if excluded && !cfg.FlagExcluded {
 			continue
 		}
@@ -238,14 +247,14 @@ func (d *DockerUtil) dockerContainers(ctx context.Context, cfg *ContainerListCon
 			Type:        "Docker",
 			ID:          c.ID,
 			EntityID:    entityID,
-			Name:        c.Names[0],
+			Name:        containerName,
 			Image:       image,
 			ImageID:     c.ImageID,
 			Created:     c.Created,
 			State:       c.State,
 			Excluded:    excluded,
 			Health:      parseContainerHealth(c.Status),
-			AddressList: d.parseContainerNetworkAddresses(c.ID, c.Ports, c.NetworkSettings, c.Names[0]),
+			AddressList: d.parseContainerNetworkAddresses(c.ID, c.Ports, c.NetworkSettings, containerName),
 		}
 
 		ret = append(ret, container)

@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
 package checks
 
 import (
@@ -32,7 +37,7 @@ func (p *ProcessCheck) runRealtime(cfg *config.AgentConfig, groupID int32) (*Run
 	var sysProbeUtil *net.RemoteSysProbeUtil
 	// if the Process module is disabled, we allow Probe to collect
 	// fields that require elevated permission to collect with best effort
-	if !cfg.CheckIsEnabled(config.ProcessModuleCheckName) {
+	if !p.SysprobeProcessModuleEnabled {
 		procutil.WithPermission(true)(p.probe)
 	} else {
 		procutil.WithPermission(false)(p.probe)

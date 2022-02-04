@@ -3,14 +3,17 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2017-present Datadog, Inc.
 
+//go:build !serverless
 // +build !serverless
 
 package listeners
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
+	"github.com/DataDog/datadog-agent/pkg/autodiscovery/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/status/health"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
@@ -93,6 +96,7 @@ func (l *workloadmetaListenerImpl) Store() workloadmeta.Store {
 }
 
 func (l *workloadmetaListenerImpl) AddService(svcID string, svc Service, parentSvcID string) {
+	kind := kindFromSvcID(svcID)
 	if parentSvcID != "" {
 		if _, ok := l.children[parentSvcID]; !ok {
 			l.children[parentSvcID] = make(map[string]struct{})
@@ -103,16 +107,18 @@ func (l *workloadmetaListenerImpl) AddService(svcID string, svc Service, parentS
 
 	if old, found := l.services[svcID]; found {
 		if svcEqual(old, svc) {
-			log.Tracef("%s received a duplicated service '%s', ignoring", l.name, svc.GetEntity())
+			log.Tracef("%s received a duplicated service '%s', ignoring", l.name, svc.GetServiceID())
 			return
 		}
 
-		log.Tracef("%s received an updated service '%s', removing the old one", l.name, svc.GetEntity())
+		log.Tracef("%s received an updated service '%s', removing the old one", l.name, svc.GetServiceID())
 		l.delService <- old
+		telemetry.WatchedResources.Dec(l.name, kind)
 	}
 
 	l.services[svcID] = svc
 	l.newService <- svc
+	telemetry.WatchedResources.Inc(l.name, kind)
 }
 
 func (l *workloadmetaListenerImpl) IsExcluded(ft containers.FilterType, name, image, ns string) bool {
@@ -123,27 +129,33 @@ func (l *workloadmetaListenerImpl) Listen(newSvc chan<- Service, delSvc chan<- S
 	l.newService = newSvc
 	l.delService = delSvc
 
-	ch := l.store.Subscribe(l.name, l.workloadFilters)
+	ch := l.store.Subscribe(l.name, workloadmeta.NormalPriority, l.workloadFilters)
 	health := health.RegisterLiveness(l.name)
 	creationTime := integration.Before
 
 	log.Infof("%s initialized successfully", l.name)
 
 	go func() {
+		defer func() {
+			err := health.Deregister()
+			if err != nil {
+				log.Warnf("error de-registering health check: %s", err)
+			}
+		}()
+
 		for {
 			select {
-			case evBundle := <-ch:
+			case evBundle, ok := <-ch:
+				if !ok {
+					return
+				}
+
 				l.processEvents(evBundle, creationTime)
 				creationTime = integration.After
 
 			case <-health.C:
 
 			case <-l.stop:
-				err := health.Deregister()
-				if err != nil {
-					log.Warnf("error de-registering health check: %s", err)
-				}
-
 				l.store.Unsubscribe(ch)
 
 				return
@@ -226,8 +238,18 @@ func (l *workloadmetaListenerImpl) removeService(svcID string) {
 
 	delete(l.services, svcID)
 	l.delService <- svc
+	telemetry.WatchedResources.Dec(l.name, kindFromSvcID(svcID))
 }
 
 func buildSvcID(entityID workloadmeta.EntityID) string {
 	return fmt.Sprintf("%s://%s", entityID.Kind, entityID.ID)
+}
+
+func kindFromSvcID(svcID string) string {
+	sep := "://"
+	if strings.Contains(svcID, sep) {
+		return strings.Split(svcID, sep)[0]
+	}
+
+	return "unknown"
 }

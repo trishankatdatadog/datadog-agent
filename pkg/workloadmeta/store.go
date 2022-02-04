@@ -31,9 +31,10 @@ const (
 )
 
 type subscriber struct {
-	name   string
-	ch     chan EventBundle
-	filter *Filter
+	name     string
+	priority SubscriberPriority
+	ch       chan EventBundle
+	filter   *Filter
 }
 
 type sourceToEntity map[Source]Entity
@@ -95,6 +96,10 @@ var _ Store = &store{}
 // each collector in the catalog. Call Start to start the store and its
 // collectors.
 func NewStore(catalog map[string]collectorFactory) Store {
+	return newStore(catalog)
+}
+
+func newStore(catalog map[string]collectorFactory) *store {
 	candidates := make(map[string]Collector)
 	for id, c := range catalog {
 		candidates[id] = c()
@@ -171,6 +176,10 @@ func (s *store) Start(ctx context.Context) {
 					log.Warnf("error de-registering health check: %s", err)
 				}
 
+				s.unsubscribeAll()
+
+				log.Infof("stopped workloadmeta store")
+
 				return
 			}
 		}
@@ -184,25 +193,26 @@ func (s *store) Start(ctx context.Context) {
 // Subscribe returns a channel where workload metadata events will be streamed
 // as they happen. On first subscription, it will also generate an EventTypeSet
 // event for each entity present in the store that matches filter.
-func (s *store) Subscribe(name string, filter *Filter) chan EventBundle {
+func (s *store) Subscribe(name string, priority SubscriberPriority, filter *Filter) chan EventBundle {
 	// ch needs to be buffered since we'll send it events before the
 	// subscriber has the chance to start receiving from it. if it's
 	// unbuffered, it'll deadlock.
 	sub := subscriber{
-		name:   name,
-		ch:     make(chan EventBundle, 1),
-		filter: filter,
+		name:     name,
+		priority: priority,
+		ch:       make(chan EventBundle, 1),
+		filter:   filter,
 	}
-
-	s.subscribersMut.Lock()
-	s.subscribers = append(s.subscribers, sub)
-	s.subscribersMut.Unlock()
-
-	telemetry.Subscribers.Inc()
 
 	var events []Event
 
+	// lock the store and only unlock once the subscriber has been added,
+	// otherwise the subscriber can lose events. adding the subscriber
+	// before locking the store can cause deadlocks if the store sends
+	// events before this function returns.
 	s.storeMut.RLock()
+	defer s.storeMut.RUnlock()
+
 	for kind, entitiesOfKind := range s.store {
 		if !sub.filter.MatchKind(kind) {
 			continue
@@ -221,7 +231,6 @@ func (s *store) Subscribe(name string, filter *Filter) chan EventBundle {
 			})
 		}
 	}
-	s.storeMut.RUnlock()
 
 	// sort events by kind and ID for deterministic ordering
 	sort.Slice(events, func(i, j int) bool {
@@ -239,6 +248,16 @@ func (s *store) Subscribe(name string, filter *Filter) chan EventBundle {
 	// the subscriber is not ready to receive events yet
 	notifyChannel(sub.name, sub.ch, events, false)
 
+	s.subscribersMut.Lock()
+	defer s.subscribersMut.Unlock()
+
+	s.subscribers = append(s.subscribers, sub)
+	sort.SliceStable(s.subscribers, func(i, j int) bool {
+		return s.subscribers[i].priority < s.subscribers[j].priority
+	})
+
+	telemetry.Subscribers.Inc()
+
 	return sub.ch
 }
 
@@ -251,11 +270,10 @@ func (s *store) Unsubscribe(ch chan EventBundle) {
 		if sub.ch == ch {
 			s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
 			telemetry.Subscribers.Dec()
-			break
+			close(ch)
+			return
 		}
 	}
-
-	close(ch)
 }
 
 // GetContainer returns metadata about a container.
@@ -449,35 +467,27 @@ func (s *store) handleEvents(evs []CollectorEvent) {
 				continue
 			}
 
-			entityOfSource, ok := s.store[entityID.Kind][entityID.ID]
-			entitySources, _ := filter.SelectSources(entityOfSource.sources())
+			entityOfSource := s.store[entityID.Kind][entityID.ID]
+			filteredSources, _ := filter.SelectSources(entityOfSource.sources())
 
-			if ev.Type == EventTypeSet && ok {
-				// setting an entity is straight forward
+			if ev.Type == EventTypeSet || len(filteredSources) > 0 {
+				// setting an entity (EventTypeSet) or entity
+				// had one source removed, but others remain
 				filteredEvents = append(filteredEvents, Event{
 					Type:    EventTypeSet,
-					Sources: entitySources,
-					Entity:  entityOfSource.merge(entitySources),
+					Sources: filteredSources,
+					Entity:  entityOfSource.merge(filteredSources),
 				})
-				continue
-			}
 
-			if !ok {
+			} else {
 				// entity has been removed entirely, unsetting
 				// is straight forward too
 				filteredEvents = append(filteredEvents, Event{
 					Type:    EventTypeUnset,
 					Sources: evSources,
-					Entity:  ev.Entity.GetID(),
+					Entity:  ev.Entity,
 				})
-				continue
 			}
-
-			filteredEvents = append(filteredEvents, Event{
-				Type:    EventTypeUnset,
-				Sources: evSources,
-				Entity:  ev.Entity.GetID(),
-			})
 		}
 
 		notifyChannel(sub.name, sub.ch, filteredEvents, true)
@@ -516,6 +526,17 @@ func (s *store) listEntitiesByKind(kind Kind) ([]Entity, error) {
 	}
 
 	return entities, nil
+}
+
+func (s *store) unsubscribeAll() {
+	s.subscribersMut.Lock()
+	defer s.subscribersMut.Unlock()
+
+	for _, sub := range s.subscribers {
+		close(sub.ch)
+	}
+
+	telemetry.Subscribers.Set(0)
 }
 
 func notifyChannel(name string, ch chan EventBundle, events []Event, wait bool) {

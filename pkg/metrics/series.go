@@ -19,6 +19,7 @@ import (
 	"github.com/richardartoul/molecule"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator/ckey"
+	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/serializer/marshaler"
 	"github.com/DataDog/datadog-agent/pkg/serializer/stream"
 	"github.com/DataDog/datadog-agent/pkg/telemetry"
@@ -221,11 +222,51 @@ func (a APIMetricType) seriesAPIV2Enum() int32 {
 // If a compressed payload is larger than the max, a new payload will be generated. This method returns a slice of
 // compressed protobuf marshaled MetricPayload objects.
 func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext) ([]*[]byte, error) {
+	return marshalSplitCompress(newSerieSliceIterator(series), bufferContext)
+}
+
+type serieIterator interface {
+	MoveNext() bool
+	Current() *Serie
+}
+
+var _ serieIterator = (*serieSliceIterator)(nil)
+
+// serieSliceIterator implements serieIterator interface for `[]*Serie`.
+type serieSliceIterator struct {
+	series []*Serie
+	index  int
+}
+
+func newSerieSliceIterator(series []*Serie) *serieSliceIterator {
+	return &serieSliceIterator{
+		series: series,
+		index:  -1,
+	}
+}
+func (s *serieSliceIterator) MoveNext() bool {
+	s.index++
+	return s.index < len(s.series)
+}
+
+func (s *serieSliceIterator) Current() *Serie {
+	return s.series[s.index]
+}
+
+// MarshalSplitCompress uses the stream compressor to marshal and compress series payloads.
+// If a compressed payload is larger than the max, a new payload will be generated. This method returns a slice of
+// compressed protobuf marshaled MetricPayload objects.
+func marshalSplitCompress(iterator serieIterator, bufferContext *marshaler.BufferContext) ([]*[]byte, error) {
 	var err error
 	var compressor *stream.Compressor
 	buf := bufferContext.PrecompressionBuf
 	ps := molecule.NewProtoStream(buf)
 	payloads := []*[]byte{}
+
+	var pointsThisPayload int
+	var seriesThisPayload int
+	var serie *Serie
+	maxPointsPerPayload := config.Datadog.GetInt("serializer_max_series_points_per_payload")
 
 	// constants for the protobuf data we will be writing, taken from MetricPayload in
 	// https://github.com/DataDog/agent-payload/blob/master/proto/metrics/agent_payload.proto
@@ -246,6 +287,8 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 	startPayload := func() error {
 		var err error
 
+		pointsThisPayload = 0
+		seriesThisPayload = 0
 		bufferContext.CompressorInput.Reset()
 		bufferContext.CompressorOutput.Reset()
 
@@ -257,6 +300,16 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 		return nil
 	}
 
+	addToPayload := func() error {
+		err = compressor.AddItem(buf.Bytes())
+		if err != nil {
+			return err
+		}
+		pointsThisPayload += len(serie.Points)
+		seriesThisPayload++
+		return nil
+	}
+
 	finishPayload := func() error {
 		var payload []byte
 		// Since the compression buffer is full - flush it and rotate
@@ -265,7 +318,9 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 			return err
 		}
 
-		payloads = append(payloads, &payload)
+		if seriesThisPayload > 0 {
+			payloads = append(payloads, &payload)
+		}
 
 		return nil
 	}
@@ -276,7 +331,9 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 		return nil, err
 	}
 
-	for _, serie := range series {
+	for iterator.MoveNext() {
+		serie = iterator.Current()
+
 		buf.Reset()
 		err = ps.Embedded(payloadSeries, func(ps *molecule.ProtoStream) error {
 			var err error
@@ -352,8 +409,17 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 			return nil, err
 		}
 
-		// Compress the protobuf metadata and the marshaled series
-		err = compressor.AddItem(buf.Bytes())
+		if len(serie.Points) > maxPointsPerPayload {
+			// this series is just too big to fit in a payload (even alone)
+			err = stream.ErrItemTooBig
+		} else if pointsThisPayload+len(serie.Points) > maxPointsPerPayload {
+			// this series won't fit in this payload, but will fit in the next
+			err = stream.ErrPayloadFull
+		} else {
+			// Compress the protobuf metadata and the marshaled series
+			err = addToPayload()
+		}
+
 		switch err {
 		case stream.ErrPayloadFull:
 			expvarsPayloadFull.Add(1)
@@ -370,7 +436,7 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 			}
 
 			// Add it to the new compression buffer
-			err = compressor.AddItem(buf.Bytes())
+			err = addToPayload()
 			if err == stream.ErrItemTooBig {
 				// Item was too big, drop it
 				expvarsItemTooBig.Add(1)
@@ -397,6 +463,7 @@ func (series Series) MarshalSplitCompress(bufferContext *marshaler.BufferContext
 		}
 	}
 
+	// if the last payload has any data, flush it
 	err = finishPayload()
 	if err != nil {
 		return nil, err
@@ -427,46 +494,27 @@ func (e Serie) String() string {
 	return string(s)
 }
 
-//// The following methods implement the StreamJSONMarshaler interface
-//// for support of the enable_stream_payload_serialization option.
-
-// WriteHeader writes the payload header for this type
-func (series Series) WriteHeader(stream *jsoniter.Stream) error {
+func writeHeader(stream *jsoniter.Stream) error {
 	stream.WriteObjectStart()
 	stream.WriteObjectField("series")
 	stream.WriteArrayStart()
 	return stream.Flush()
 }
 
-// WriteFooter prints the payload footer for this type
-func (series Series) WriteFooter(stream *jsoniter.Stream) error {
+func writeFooter(stream *jsoniter.Stream) error {
 	stream.WriteArrayEnd()
 	stream.WriteObjectEnd()
 	return stream.Flush()
 }
 
-// WriteItem prints the json representation of an item
-func (series Series) WriteItem(stream *jsoniter.Stream, i int) error {
-	if i < 0 || i > len(series)-1 {
-		return errors.New("out of range")
-	}
-	serie := series[i]
+func writeItem(stream *jsoniter.Stream, serie *Serie) error {
 	populateDeviceField(serie)
 	encodeSerie(serie, stream)
 	return stream.Flush()
 }
 
-// Len returns the number of items to marshal
-func (series Series) Len() int {
-	return len(series)
-}
-
-// DescribeItem returns a text description for logs
-func (series Series) DescribeItem(i int) string {
-	if i < 0 || i > len(series)-1 {
-		return "out of range"
-	}
-	return fmt.Sprintf("name %q, %d points", series[i].Name, len(series[i].Points))
+func describeItem(serie *Serie) string {
+	return fmt.Sprintf("name %q, %d points", serie.Name, len(serie.Points))
 }
 
 func encodeSerie(serie *Serie, stream *jsoniter.Stream) {
@@ -536,4 +584,49 @@ func encodePoints(points []Point, stream *jsoniter.Stream) {
 		stream.WriteArrayEnd()
 	}
 	stream.WriteArrayEnd()
+}
+
+//// The following methods implement the StreamJSONMarshaler interface
+//// for support of the enable_stream_payload_serialization option.
+
+// WriteHeader writes the payload header for this type
+func (series Series) WriteHeader(stream *jsoniter.Stream) error {
+	return writeHeader(stream)
+}
+
+// WriteFooter writes the payload footer for this type
+func (series Series) WriteFooter(stream *jsoniter.Stream) error {
+	return writeFooter(stream)
+}
+
+// WriteItem writes the json representation of an item
+func (series Series) WriteItem(stream *jsoniter.Stream, i int) error {
+	if i < 0 || i > len(series)-1 {
+		return errors.New("out of range")
+	}
+	return writeItem(stream, series[i])
+}
+
+// Len returns the number of items to marshal
+func (series Series) Len() int {
+	return len(series)
+}
+
+// DescribeItem returns a text description for logs
+func (series Series) DescribeItem(i int) string {
+	if i < 0 || i > len(series)-1 {
+		return "out of range"
+	}
+	return describeItem(series[i])
+}
+
+// SerieSink is a sink for series.
+// It provides a way to append a serie into `Series` or `IterableSerie`
+type SerieSink interface {
+	Append(*Serie)
+}
+
+// Append appends a serie into series. Implement `SerieSink` interface.
+func (series *Series) Append(serie *Serie) {
+	*series = append(*series, serie)
 }

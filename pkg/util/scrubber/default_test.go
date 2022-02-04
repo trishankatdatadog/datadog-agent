@@ -284,6 +284,58 @@ func TestSNMPConfig(t *testing.T) {
 		`   community_string:   'password'   `,
 		`   community_string: ********`)
 	assertClean(t,
+		`
+snmp_traps_config:
+  community_strings:
+    - 'password1'
+    - 'password2'
+other_config: 1
+other_config_with_list: [abc]
+`,
+		`snmp_traps_config:
+  community_strings: ********
+other_config: 1
+other_config_with_list: [abc]
+`)
+	assertClean(t,
+		`
+snmp_traps_config:
+  community_strings: ['password1', 'password2']
+other_config: 1
+other_config_with_list: [abc]
+`,
+		`snmp_traps_config:
+  community_strings: ********
+other_config: 1
+other_config_with_list: [abc]
+`)
+	assertClean(t,
+		`
+snmp_traps_config:
+  community_strings: []
+other_config: 1
+other_config_with_list: [abc]
+`,
+		`snmp_traps_config:
+  community_strings: ********
+other_config: 1
+other_config_with_list: [abc]
+`)
+	assertClean(t,
+		`
+snmp_traps_config:
+  community_strings: [
+   'password1',
+   'password2']
+other_config: 1
+other_config_with_list: [abc]
+`,
+		`snmp_traps_config:
+  community_strings: ********
+other_config: 1
+other_config_with_list: [abc]
+`)
+	assertClean(t,
 		`community: password`,
 		`community: ********`)
 	assertClean(t,
@@ -361,6 +413,10 @@ auth_token: bar
 auth_token_file_path: /foo/bar/baz
 kubelet_auth_token_path: /foo/bar/kube_token
 # comment to strip
+snmp_traps_config:
+  community_strings:
+    - 'password1'
+    - 'password2'
 log_level: info`,
 		`dd_url: https://app.datadoghq.com
 api_key: ***************************aaaaa
@@ -369,6 +425,8 @@ password: ********
 auth_token: ********
 auth_token_file_path: /foo/bar/baz
 kubelet_auth_token_path: /foo/bar/kube_token
+snmp_traps_config:
+  community_strings: ********
 log_level: info`)
 }
 

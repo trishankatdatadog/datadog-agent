@@ -17,6 +17,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/common/utils"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/providers/names"
+	"github.com/DataDog/datadog-agent/pkg/autodiscovery/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/status/health"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
@@ -37,7 +38,7 @@ type KubeletConfigProvider struct {
 
 // NewKubeletConfigProvider returns a new ConfigProvider connected to kubelet.
 // Connectivity is not checked at this stage to allow for retries, Collect will do it.
-func NewKubeletConfigProvider(config config.ConfigurationProviders) (ConfigProvider, error) {
+func NewKubeletConfigProvider(*config.ConfigurationProviders) (ConfigProvider, error) {
 	return &KubeletConfigProvider{
 		workloadmetaStore: workloadmeta.GetGlobalStore(),
 		configErrors:      make(map[string]ErrorMsgSet),
@@ -69,16 +70,26 @@ func (k *KubeletConfigProvider) listen() {
 	k.Lock()
 	k.streaming = true
 	health := health.RegisterLiveness(name)
+	defer func() {
+		err := health.Deregister()
+		if err != nil {
+			log.Warnf("error de-registering health check: %s", err)
+		}
+	}()
 	k.Unlock()
 
-	ch := k.workloadmetaStore.Subscribe(name, workloadmeta.NewFilter(
+	ch := k.workloadmetaStore.Subscribe(name, workloadmeta.NormalPriority, workloadmeta.NewFilter(
 		[]workloadmeta.Kind{workloadmeta.KindKubernetesPod},
 		[]workloadmeta.Source{workloadmeta.SourceKubelet},
 	))
 
 	for {
 		select {
-		case evBundle := <-ch:
+		case evBundle, ok := <-ch:
+			if !ok {
+				return
+			}
+
 			k.processEvents(evBundle)
 
 		case <-health.C:
@@ -204,6 +215,7 @@ func (k *KubeletConfigProvider) generateConfigs() ([]integration.Config, error) 
 	}
 
 	k.configErrors = adErrors
+	telemetry.Errors.Set(float64(len(adErrors)), names.Kubernetes)
 
 	return configs, nil
 }
@@ -218,7 +230,7 @@ func (k *KubeletConfigProvider) IsUpToDate(ctx context.Context) (bool, error) {
 }
 
 func init() {
-	RegisterProvider("kubelet", NewKubeletConfigProvider)
+	RegisterProvider(names.KubeletRegisterName, NewKubeletConfigProvider)
 }
 
 // GetConfigErrors returns a map of configuration errors for each namespace/pod

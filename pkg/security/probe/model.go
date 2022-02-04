@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build linux
 // +build linux
 
 package probe
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	pconfig "github.com/DataDog/datadog-agent/pkg/process/config"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/compiler/eval"
@@ -68,6 +71,13 @@ func (ev *Event) GetPathResolutionError() error {
 
 // ResolveFilePath resolves the inode to a full path
 func (ev *Event) ResolveFilePath(f *model.FileEvent) string {
+	// do not try to resolve mmap events when they aren't backed by any file
+	if ev.GetEventType() == model.MMapEventType {
+		if ev.MMap.Flags&unix.MAP_ANONYMOUS != 0 {
+			return ""
+		}
+	}
+
 	if len(f.PathnameStr) == 0 {
 		path, err := ev.resolvers.resolveFileFieldsPath(&f.FileFields)
 		if err != nil {
@@ -234,31 +244,32 @@ func (ev *Event) ResolveProcessCreatedAt(e *model.Process) uint64 {
 	return uint64(e.ExecTime.UnixNano())
 }
 
-// ResolveExecArgs resolves the args of the event
-func (ev *Event) ResolveExecArgs(e *model.ExecEvent) string {
-	if ev.Exec.Args == "" {
-		ev.Exec.Args = strings.Join(ev.ResolveExecArgv(e), " ")
-	}
-	return ev.Exec.Args
+// ResolveProcessArgv0 resolves the first arg of the event
+func (ev *Event) ResolveProcessArgv0(process *model.Process) string {
+	arg0, _ := ev.resolvers.ProcessResolver.GetProcessArgv0(process)
+	return arg0
 }
 
-// ResolveExecArgv resolves the args of the event as an array
-func (ev *Event) ResolveExecArgv(e *model.ExecEvent) []string {
-	if len(ev.Exec.Argv) == 0 {
-		ev.Exec.Argv, ev.Exec.ArgsTruncated = ev.resolvers.ProcessResolver.GetProcessArgv(&e.Process)
-	}
-	return ev.Exec.Argv
+// ResolveProcessArgs resolves the args of the event
+func (ev *Event) ResolveProcessArgs(process *model.Process) string {
+	return strings.Join(ev.ResolveProcessArgv(process), " ")
 }
 
-// ResolveExecArgsTruncated returns whether the args are truncated
-func (ev *Event) ResolveExecArgsTruncated(e *model.ExecEvent) bool {
-	_ = ev.ResolveExecArgs(e)
-	return ev.Exec.ArgsTruncated
+// ResolveProcessArgv resolves the args of the event as an array
+func (ev *Event) ResolveProcessArgv(process *model.Process) []string {
+	argv, _ := ev.resolvers.ProcessResolver.GetProcessArgv(process)
+	return argv
 }
 
-// ResolveExecArgsFlags resolves the arguments flags of the event
-func (ev *Event) ResolveExecArgsFlags(e *model.ExecEvent) (flags []string) {
-	for _, arg := range ev.ResolveExecArgv(e) {
+// ResolveProcessArgsTruncated returns whether the args are truncated
+func (ev *Event) ResolveProcessArgsTruncated(process *model.Process) bool {
+	_, truncated := ev.resolvers.ProcessResolver.GetProcessArgv(process)
+	return truncated
+}
+
+// ResolveProcessArgsFlags resolves the arguments flags of the event
+func (ev *Event) ResolveProcessArgsFlags(process *model.Process) (flags []string) {
+	for _, arg := range ev.ResolveProcessArgv(process) {
 		if len(arg) > 1 && arg[0] == '-' {
 			isFlag := true
 			name := arg[1:]
@@ -288,9 +299,9 @@ func (ev *Event) ResolveExecArgsFlags(e *model.ExecEvent) (flags []string) {
 	return
 }
 
-// ResolveExecArgsOptions resolves the arguments options of the event
-func (ev *Event) ResolveExecArgsOptions(e *model.ExecEvent) (options []string) {
-	args := ev.ResolveExecArgv(e)
+// ResolveProcessArgsOptions resolves the arguments options of the event
+func (ev *Event) ResolveProcessArgsOptions(process *model.Process) (options []string) {
+	args := ev.ResolveProcessArgv(process)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if len(arg) > 1 && arg[0] == '-' {
@@ -313,25 +324,16 @@ func (ev *Event) ResolveExecArgsOptions(e *model.ExecEvent) (options []string) {
 	return
 }
 
-// ResolveExecEnvsTruncated returns whether the envs are truncated
-func (ev *Event) ResolveExecEnvsTruncated(e *model.ExecEvent) bool {
-	_ = ev.ResolveExecEnvs(e)
-	return ev.Exec.EnvsTruncated
+// ResolveProcessEnvsTruncated returns whether the envs are truncated
+func (ev *Event) ResolveProcessEnvsTruncated(process *model.Process) bool {
+	_, truncated := ev.resolvers.ProcessResolver.GetProcessEnvs(process)
+	return truncated
 }
 
-// ResolveExecEnvs resolves the envs of the event
-func (ev *Event) ResolveExecEnvs(e *model.ExecEvent) []string {
-	if len(e.Envs) == 0 {
-		envs, truncated := ev.resolvers.ProcessResolver.GetProcessEnvs(&e.Process)
-		if envs != nil {
-			ev.Exec.Envs = make([]string, 0, len(envs))
-			for key := range envs {
-				ev.Exec.Envs = append(ev.Exec.Envs, key)
-			}
-			ev.Exec.EnvsTruncated = truncated
-		}
-	}
-	return ev.Exec.Envs
+// ResolveProcessEnvs resolves the envs of the event
+func (ev *Event) ResolveProcessEnvs(process *model.Process) []string {
+	envs, _ := ev.resolvers.ProcessResolver.GetProcessEnvs(process)
+	return envs
 }
 
 // ResolveSetuidUser resolves the user of the Setuid event

@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build linux
 // +build linux
 
 package probes
@@ -114,6 +115,13 @@ var execProbes = []*manager.Probe{
 			UID:          SecurityAgentUID,
 			EBPFSection:  "kprobe/commit_creds",
 			EBPFFuncName: "kprobe_commit_creds",
+		},
+	},
+	{
+		ProbeIdentificationPair: manager.ProbeIdentificationPair{
+			UID:          SecurityAgentUID,
+			EBPFSection:  "kretprobe/__task_pid_nr_ns",
+			EBPFFuncName: "kretprobe__task_pid_nr_ns",
 		},
 	},
 }

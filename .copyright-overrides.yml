@@ -41,6 +41,7 @@ github.com/grpc-ecosystem/*: gRPC Ecosystem
 google.golang.org/genproto/*: Google LLC
 google.golang.org/grpc: gRPC authors
 google.golang.org/grpc/*: gRPC authors
+github.com/skydive-project/go-debouncer: Red Hat, Inc
 
 # NOTE: We cannot use
 #   github.com/DataDog/*: Datadog, Inc.
@@ -71,12 +72,15 @@ github.com/tklauser/numcpus: Tobias Klauser
 github.com/Masterminds/goutils: Alexander Okoli
 github.com/dgraph-io/ristretto: Dgraph Labs, Inc. and Contributors
 github.com/go-logr/logr: The logr Authors
+github.com/go-logr/stdr: The logr Authors
 github.com/go-openapi/jsonpointer: sigu-399 ( https://github.com/sigu-399 )
 github.com/go-openapi/jsonreference: sigu-399 ( https://github.com/sigu-399 )
 github.com/go-openapi/spec: go-swagger maintainers
 github.com/go-openapi/swag: go-swagger maintainers
 github.com/google/gofuzz: Google, Inc.
 github.com/kubernetes-sigs/custom-metrics-apiserver: The Kubernetes Authors
+github.com/mostynb/go-grpc-compression/snappy: gRPC authors
+github.com/mostynb/go-grpc-compression/zstd: Mostyn Bramley-Moore
 github.com/sassoftware/go-rpmutils: SAS Institute, Inc.
 github.com/spf13/cobra: Steve Francia <spf@spf13.com>
 github.com/xeipuuv/gojsonpointer: xeipuuv ( https://github.com/xeipuuv )

@@ -3,7 +3,8 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//+build functionaltests stresstests
+//go:build functionaltests || stresstests
+// +build functionaltests stresstests
 
 package tests
 
@@ -14,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -108,10 +108,11 @@ rules:
 `
 
 var (
-	testEnvironment string
-	useReload       bool
-	logLevelStr     string
-	logPatterns     stringSlice
+	testEnvironment  string
+	useReload        bool
+	logLevelStr      string
+	logPatterns      stringSlice
+	logStatusMetrics bool
 )
 
 const (
@@ -271,17 +272,12 @@ func which(name string) string {
 
 //nolint:deadcode,unused
 func copyFile(src string, dst string, mode fs.FileMode) error {
-	input, err := ioutil.ReadFile(src)
+	input, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
 
-	err = ioutil.WriteFile(dst, input, mode)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return os.WriteFile(dst, input, mode)
 }
 
 //nolint:deadcode,unused
@@ -387,7 +383,7 @@ func setTestConfig(dir string, opts testOpts) (string, error) {
 }
 
 func setTestPolicy(dir string, macros []*rules.MacroDefinition, rules []*rules.RuleDefinition) (string, error) {
-	testPolicyFile, err := ioutil.TempFile(dir, "secagent-policy.*.policy")
+	testPolicyFile, err := os.CreateTemp(dir, "secagent-policy.*.policy")
 	if err != nil {
 		return "", err
 	}
@@ -470,7 +466,7 @@ func newTestModule(t testing.TB, macroDefs []*rules.MacroDefinition, ruleDefs []
 				return testMod, err
 			}
 
-			if ruleDefs != nil {
+			if ruleDefs != nil && logStatusMetrics {
 				t.Logf("%s entry stats: %s\n", t.Name(), GetStatusMetrics(testMod.probe))
 			}
 			return testMod, nil
@@ -529,7 +525,10 @@ func newTestModule(t testing.TB, macroDefs []*rules.MacroDefinition, ruleDefs []
 		return nil, errors.Wrap(err, "failed to start module")
 	}
 
-	t.Logf("%s entry stats: %s\n", t.Name(), GetStatusMetrics(testMod.probe))
+	if logStatusMetrics {
+		t.Logf("%s entry stats: %s\n", t.Name(), GetStatusMetrics(testMod.probe))
+	}
+
 	return testMod, nil
 }
 
@@ -695,6 +694,8 @@ func (err ErrSkipTest) Error() string {
 }
 
 func (tm *testModule) WaitSignal(tb testing.TB, action func() error, cb ruleHandler) {
+	tb.Helper()
+
 	if err := tm.GetSignal(tb, action, cb); err != nil {
 		if _, ok := err.(ErrSkipTest); ok {
 			tb.Skip(err)
@@ -990,7 +991,9 @@ func (tm *testModule) cleanup() {
 }
 
 func (tm *testModule) Close() {
-	tm.t.Logf("%s exit stats: %s\n", tm.t.Name(), GetStatusMetrics(tm.probe))
+	if logStatusMetrics {
+		tm.t.Logf("%s exit stats: %s\n", tm.t.Name(), GetStatusMetrics(tm.probe))
+	}
 
 	if useReload {
 		if _, err := newTestModule(tm.t, nil, nil, tm.opts); err != nil {
@@ -1098,7 +1101,7 @@ func newSimpleTest(macros []*rules.MacroDefinition, rules []*rules.RuleDefinitio
 	}
 
 	if testDir == "" {
-		t.root, err = ioutil.TempDir("", "test-secagent-root")
+		t.root, err = os.MkdirTemp("", "test-secagent-root")
 		if err != nil {
 			return nil, err
 		}
@@ -1183,9 +1186,10 @@ func init() {
 	flag.BoolVar(&useReload, "reload", true, "reload rules instead of stopping/starting the agent for every test")
 	flag.StringVar(&logLevelStr, "loglevel", seelog.WarnStr, "log level")
 	flag.Var(&logPatterns, "logpattern", "List of log pattern")
+	flag.BoolVar(&logStatusMetrics, "status-metrics", false, "display status metrics")
 	rand.Seed(time.Now().UnixNano())
 
-	testSuitePid = uint32(os.Getpid())
+	testSuitePid = uint32(utils.Getpid())
 }
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")

@@ -54,6 +54,8 @@ updates:
     ignore:
       # Ignore internal modules
       - dependency-name: github.com/DataDog/datadog-agent/*
+      # See https://github.com/DataDog/datadog-agent/pull/10112
+      - dependency-name: github.com/mailru/easyjson
     schedule:
       interval: weekly
   - package-ecosystem: gomod
@@ -128,18 +130,6 @@ updates:
     milestone: 22
     schedule:
       interval: monthly
-  - package-ecosystem: "pip"
-    directory: "/"
-    labels:
-      - dependencies
-      - python
-      - team/agent-platform
-      - changelog/no-changelog
-      - qa/skip-qa
-      - dev/tooling
-    milestone: 22
-    schedule:
-      interval: "weekly"
   - package-ecosystem: "pip"
     directory: "/.circleci"
     labels:

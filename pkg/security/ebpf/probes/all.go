@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build linux
 // +build linux
 
 package probes
@@ -36,6 +37,9 @@ func AllProbes() []*manager.Probe {
 	allProbes = append(allProbes, getIoctlProbes()...)
 	allProbes = append(allProbes, getSELinuxProbes()...)
 	allProbes = append(allProbes, getBPFProbes()...)
+	allProbes = append(allProbes, getPTraceProbes()...)
+	allProbes = append(allProbes, getMMapProbes()...)
+	allProbes = append(allProbes, getMProtectProbes()...)
 
 	allProbes = append(allProbes,
 		// Syscall monitor
@@ -144,12 +148,12 @@ func AllTailRoutes(ERPCDentryResolutionEnabled bool) []manager.TailCallRoute {
 	return routes
 }
 
-// AllBPFProbeWriteUserSections returns the list of program sections that use the bpf_probe_write_user helper
-func AllBPFProbeWriteUserSections() []string {
+// AllBPFProbeWriteUserProgramFunctions returns the list of program functions that use the bpf_probe_write_user helper
+func AllBPFProbeWriteUserProgramFunctions() []string {
 	return []string{
-		"kprobe/dentry_resolver_erpc",
-		"kprobe/dentry_resolver_parent_erpc",
-		"kprobe/dentry_resolver_segment_erpc",
+		"kprobe_dentry_resolver_erpc",
+		"kprobe_dentry_resolver_parent_erpc",
+		"kprobe_dentry_resolver_segment_erpc",
 	}
 }
 

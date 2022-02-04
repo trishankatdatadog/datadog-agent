@@ -3,11 +3,13 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build containerd
 // +build containerd
 
 package containerd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -46,6 +48,7 @@ type ContainerdCheck struct {
 	instance *ContainerdConfig
 	sub      *subscriber
 	filters  *ddContainers.Filter
+	client   cutil.ContainerdItf
 }
 
 // ContainerdConfig contains the custom options and configurations set by the user.
@@ -82,13 +85,18 @@ func (c *ContainerdCheck) Configure(config, initConfig integration.Data, source 
 	if err = c.instance.Parse(config); err != nil {
 		return err
 	}
-	c.sub.Filters = c.instance.ContainerdFilters
+	c.sub.Filters = cutil.FiltersWithNamespaces(c.instance.ContainerdFilters)
 	// GetSharedMetricFilter should not return a nil instance of *Filter if there is an error during its setup.
 	fil, err := ddContainers.GetSharedMetricFilter()
 	if err != nil {
 		return err
 	}
 	c.filters = fil
+
+	c.client, err = cutil.NewContainerdUtil()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -102,30 +110,40 @@ func (c *ContainerdCheck) Run() error {
 	defer sender.Commit()
 
 	// As we do not rely on a singleton, we ensure connectivity every check run.
-	cu, errHealth := cutil.GetContainerdUtil()
-	if errHealth != nil {
+	if errHealth := c.client.CheckConnectivity(); errHealth != nil {
 		sender.ServiceCheck("containerd.health", metrics.ServiceCheckCritical, "", nil, fmt.Sprintf("Connectivity error %v", errHealth))
 		log.Infof("Error ensuring connectivity with Containerd daemon %v", errHealth)
 		return errHealth
 	}
 	sender.ServiceCheck("containerd.health", metrics.ServiceCheckOK, "", nil, "")
-	ns := cu.Namespace()
 
 	if c.instance.CollectEvents {
 		if c.sub == nil {
-			c.sub = CreateEventSubscriber("ContainerdCheck", ns, c.instance.ContainerdFilters)
+			c.sub = CreateEventSubscriber("ContainerdCheck", cutil.FiltersWithNamespaces(c.instance.ContainerdFilters))
 		}
 
 		if !c.sub.IsRunning() {
-			// Keep track of the health of the Containerd socket
-			c.sub.CheckEvents(cu)
+			// Keep track of the health of the Containerd socket.
+			//
+			// Check events does not rely on the "namespace" attribute of the
+			// client, so we can share it.
+			c.sub.CheckEvents(c.client)
 		}
 		events := c.sub.Flush(time.Now().Unix())
 		// Process events
 		computeEvents(events, sender, c.filters)
 	}
 
-	computeMetrics(sender, cu, c.filters)
+	namespaces, err := cutil.NamespacesToWatch(context.TODO(), c.client)
+	if err != nil {
+		return err
+	}
+
+	for _, namespace := range namespaces {
+		c.client.SetCurrentNamespace(namespace)
+		computeMetrics(sender, c.client, c.filters)
+	}
+
 	return nil
 }
 

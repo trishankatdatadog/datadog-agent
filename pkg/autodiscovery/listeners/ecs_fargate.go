@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2017-present Datadog, Inc.
 
+//go:build !serverless
 // +build !serverless
 
 package listeners
@@ -25,7 +26,7 @@ type ECSFargateListener struct {
 }
 
 // NewECSFargateListener returns a new ECSFargateListener.
-func NewECSFargateListener() (ServiceListener, error) {
+func NewECSFargateListener(Config) (ServiceListener, error) {
 	const name = "ad-ecsfargatelistener"
 	l := &ECSFargateListener{}
 	f := workloadmeta.NewFilter(

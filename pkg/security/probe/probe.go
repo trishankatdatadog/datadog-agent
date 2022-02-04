@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build linux
 // +build linux
 
 package probe
@@ -31,6 +32,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf/probes"
 	seclog "github.com/DataDog/datadog-agent/pkg/security/log"
 	"github.com/DataDog/datadog-agent/pkg/security/metrics"
+	"github.com/DataDog/datadog-agent/pkg/security/probe/constantfetch"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/compiler/eval"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/model"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/rules"
@@ -103,6 +105,14 @@ func (p *Probe) detectKernelVersion() error {
 	}
 	p.kernelVersion = kernelVersion
 	return nil
+}
+
+// GetKernelVersion computes and returns the running kernel version
+func (p *Probe) GetKernelVersion() (*kernel.Version, error) {
+	if err := p.detectKernelVersion(); err != nil {
+		return nil, err
+	}
+	return p.kernelVersion, nil
 }
 
 // VerifyOSVersion returns an error if the current kernel version is not supported
@@ -482,6 +492,10 @@ func (p *Probe) handleEvent(CPU uint64, data []byte) {
 			return
 		}
 
+		if IsKThread(event.processCacheEntry.PPid, event.processCacheEntry.Pid) {
+			return
+		}
+
 		p.resolvers.ProcessResolver.ApplyBootTime(event.processCacheEntry)
 
 		p.resolvers.ProcessResolver.AddForkEntry(event.ProcessContext.Pid, event.processCacheEntry)
@@ -491,6 +505,7 @@ func (p *Probe) handleEvent(CPU uint64, data []byte) {
 			log.Errorf("failed to decode exec event: %s (offset %d, len %d)", err, offset, len(data))
 			return
 		}
+
 		p.resolvers.ProcessResolver.SetProcessArgs(event.processCacheEntry)
 		p.resolvers.ProcessResolver.SetProcessEnvs(event.processCacheEntry)
 
@@ -538,6 +553,27 @@ func (p *Probe) handleEvent(CPU uint64, data []byte) {
 	case model.BPFEventType:
 		if _, err = event.BPF.UnmarshalBinary(data[offset:]); err != nil {
 			log.Errorf("failed to decode bpf event: %s (offset %d, len %d)", err, offset, len(data))
+			return
+		}
+	case model.PTraceEventType:
+		if _, err = event.PTrace.UnmarshalBinary(data[offset:]); err != nil {
+			log.Errorf("failed to decode ptrace event: %s (offset %d, len %d)", err, offset, len(data))
+			return
+		}
+		// resolve tracee process context
+		cacheEntry := event.resolvers.ProcessResolver.Resolve(event.PTrace.PID, event.PTrace.PID)
+		if cacheEntry != nil {
+			event.PTrace.TraceeProcessCacheEntry = cacheEntry
+			event.PTrace.Tracee = cacheEntry.ProcessContext
+		}
+	case model.MMapEventType:
+		if _, err = event.MMap.UnmarshalBinary(data[offset:]); err != nil {
+			log.Errorf("failed to decode mmap event: %s (offset %d, len %d)", err, offset, len(data))
+			return
+		}
+	case model.MProtectEventType:
+		if _, err = event.MProtect.UnmarshalBinary(data[offset:]); err != nil {
+			log.Errorf("failed to decode mprotect event: %s (offset %d, len %d)", err, offset, len(data))
 			return
 		}
 	default:
@@ -895,6 +931,14 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 		p.managerOptions.ActivatedProbes = append(p.managerOptions.ActivatedProbes, probes.SyscallMonitorSelectors...)
 	}
 
+	constants, err := GetOffsetConstants(config, p)
+	if err != nil {
+		log.Warnf("constant fetcher failed: %v", err)
+		return nil, err
+	}
+
+	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors, constantfetch.CreateConstantEditors(constants)...)
+
 	// Add global constant editors
 	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors,
 		manager.ConstantEditor{
@@ -908,14 +952,6 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 		manager.ConstantEditor{
 			Name:  "mount_id_offset",
 			Value: getMountIDOffset(p),
-		},
-		manager.ConstantEditor{
-			Name:  "sizeof_inode",
-			Value: getSizeOfStructInode(p),
-		},
-		manager.ConstantEditor{
-			Name:  "sb_magic_offset",
-			Value: getSuperBlockMagicOffset(p),
 		},
 		manager.ConstantEditor{
 			Name:  "getattr2",
@@ -950,7 +986,6 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 			Value: getCheckHelperCallInputType(p),
 		},
 	)
-	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors, TTYConstants(p)...)
 	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors, DiscarderConstants...)
 	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors, getCGroupWriteConstants())
 
@@ -978,7 +1013,7 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 	p.managerOptions.TailCallRouter = probes.AllTailRoutes(p.config.ERPCDentryResolutionEnabled)
 	if !p.config.ERPCDentryResolutionEnabled {
 		// exclude the programs that use the bpf_probe_write_user helper
-		p.managerOptions.ExcludedSections = probes.AllBPFProbeWriteUserSections()
+		p.managerOptions.ExcludedFunctions = probes.AllBPFProbeWriteUserProgramFunctions()
 	}
 
 	resolvers, err := NewResolvers(config, p)
@@ -1006,4 +1041,15 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 	eventZero.scrubber = p.scrubber
 
 	return p, nil
+}
+
+// GetOffsetConstants returns the offsets and struct sizes constants
+func GetOffsetConstants(config *config.Config, probe *Probe) (map[string]uint64, error) {
+	constantFetcher := constantfetch.ComposeConstantFetchers(constantfetch.GetAvailableConstantFetchers(config, probe.kernelVersion, probe.statsdClient))
+
+	constantFetcher.AppendSizeofRequest("sizeof_inode", "struct inode", "linux/fs.h")
+	constantFetcher.AppendOffsetofRequest("sb_magic_offset", "struct super_block", "s_magic", "linux/fs.h")
+	constantFetcher.AppendOffsetofRequest("tty_offset", "struct signal_struct", "tty", "linux/sched/signal.h")
+	constantFetcher.AppendOffsetofRequest("tty_name_offset", "struct tty_struct", "name", "linux/tty.h")
+	return constantFetcher.FinishAndGetResults()
 }

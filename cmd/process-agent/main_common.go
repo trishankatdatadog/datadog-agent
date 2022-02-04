@@ -1,3 +1,8 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
 package main
 
 import (
@@ -15,6 +20,7 @@ import (
 	cmdconfig "github.com/DataDog/datadog-agent/cmd/agent/common/commands/config"
 	"github.com/DataDog/datadog-agent/cmd/manager"
 	"github.com/DataDog/datadog-agent/cmd/process-agent/api"
+	sysconfig "github.com/DataDog/datadog-agent/cmd/system-probe/config"
 	apiutil "github.com/DataDog/datadog-agent/pkg/api/util"
 	ddconfig "github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/config/settings"
@@ -33,6 +39,7 @@ import (
 	ddutil "github.com/DataDog/datadog-agent/pkg/util"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/datadog-agent/pkg/util/profiling"
+	"github.com/DataDog/datadog-agent/pkg/version"
 	"github.com/DataDog/datadog-agent/pkg/workloadmeta"
 
 	// register all workloadmeta collectors
@@ -74,7 +81,7 @@ var (
 func getSettingsClient(_ *cobra.Command, _ []string) (settings.Client, error) {
 	// Set up the config so we can get the port later
 	// We set this up differently from the main process-agent because this way is quieter
-	cfg := config.NewDefaultAgentConfig(false)
+	cfg := config.NewDefaultAgentConfig()
 	if opts.configPath != "" {
 		if err := config.LoadConfigIfExists(opts.configPath); err != nil {
 			return nil, err
@@ -145,9 +152,10 @@ func versionString(sep string) string {
 
 const (
 	agent6DisabledMessage = `process-agent not enabled.
-Set env var DD_PROCESS_AGENT_ENABLED=true or add
+Set env var DD_PROCESS_CONFIG_PROCESS_COLLECTION_ENABLED=true or add
 process_config:
-  enabled: "true"
+  process_collection:
+    enabled: true
 to your datadog.yaml file.
 Exiting.`
 )
@@ -176,7 +184,27 @@ func runAgent(exit chan struct{}) {
 		}()
 	}
 
-	cfg, err := config.NewAgentConfig(loggerName, opts.configPath, opts.sysProbeConfigPath)
+	// We need to load in the system probe environment variables before we load the config, otherwise an
+	// "Unknown environment variable" warning will show up whenever valid system probe environment variables are defined.
+	ddconfig.InitSystemProbeConfig(ddconfig.Datadog)
+
+	// `GetContainers` will panic when running in docker if the config hasn't called `DetectFeatures`.
+	// `LoadConfigIfExists` does the job of loading the config and calling `DetectFeatures` so that we can detect containers.
+	if err := config.LoadConfigIfExists(opts.configPath); err != nil {
+		_ = log.Criticalf("Error parsing config: %s", err)
+		cleanupAndExit(1)
+	}
+
+	// For system probe, there is an additional config file that is shared with the system-probe
+	syscfg, err := sysconfig.Merge(opts.sysProbeConfigPath)
+	if err != nil {
+		_ = log.Critical(err)
+		cleanupAndExit(1)
+	}
+
+	config.InitRuntimeSettings()
+
+	cfg, err := config.NewAgentConfig(loggerName, opts.configPath, syscfg)
 	if err != nil {
 		log.Criticalf("Error parsing config: %s", err)
 		cleanupAndExit(1)
@@ -217,13 +245,20 @@ func runAgent(exit chan struct{}) {
 		log.Criticalf("Error initializing info: %s", err)
 		cleanupAndExit(1)
 	}
-	if err := statsd.Configure(cfg.StatsdHost, cfg.StatsdPort); err != nil {
+	if err := statsd.Configure(ddconfig.GetBindHost(), ddconfig.Datadog.GetInt("dogstatsd_port")); err != nil {
 		log.Criticalf("Error configuring statsd: %s", err)
 		cleanupAndExit(1)
 	}
 
+	// Note: This only considers container sources that are already setup. It's possible that container sources may
+	//       need a few minutes to be ready on newly provisioned hosts.
+	_, err = util.GetContainers()
+	canAccessContainers := err == nil
+
+	enabledChecks := getChecks(syscfg, cfg.Orchestrator, canAccessContainers)
+
 	// Exit if agent is not enabled and we're not debugging a check.
-	if !cfg.Enabled && opts.check == "" {
+	if len(enabledChecks) == 0 && opts.check == "" {
 		log.Infof(agent6DisabledMessage)
 
 		// a sleep is necessary to ensure that supervisor registers this process as "STARTED"
@@ -242,8 +277,33 @@ func runAgent(exit chan struct{}) {
 	// we just pass down empty string
 	updateDockerSocket(dockerSock)
 
-	if cfg.ProfilingSettings != nil {
-		if err := profiling.Start(*cfg.ProfilingSettings); err != nil {
+	// use `internal_profiling.enabled` field in `process_config` section to enable/disable profiling for process-agent,
+	// but use the configuration from main agent to fill the settings
+	if ddconfig.Datadog.GetBool("process_config.internal_profiling.enabled") {
+		// allow full url override for development use
+		site := ddconfig.Datadog.GetString("internal_profiling.profile_dd_url")
+		if site == "" {
+			s := ddconfig.Datadog.GetString("site")
+			if s == "" {
+				s = ddconfig.DefaultSite
+			}
+			site = fmt.Sprintf(profiling.ProfilingURLTemplate, s)
+		}
+
+		v, _ := version.Agent()
+		profilingSettings := profiling.Settings{
+			ProfilingURL:         site,
+			Env:                  ddconfig.Datadog.GetString("env"),
+			Service:              "process-agent",
+			Period:               ddconfig.Datadog.GetDuration("internal_profiling.period"),
+			CPUDuration:          ddconfig.Datadog.GetDuration("internal_profiling.cpu_duration"),
+			MutexProfileFraction: ddconfig.Datadog.GetInt("internal_profiling.mutex_profile_fraction"),
+			BlockProfileRate:     ddconfig.Datadog.GetInt("internal_profiling.block_profile_rate"),
+			WithGoroutineProfile: ddconfig.Datadog.GetBool("internal_profiling.enable_goroutine_stacktraces"),
+			Tags:                 []string{fmt.Sprintf("version:%v", v)},
+		}
+
+		if err := profiling.Start(profilingSettings); err != nil {
 			log.Warnf("failed to enable profiling: %s", err)
 		} else {
 			log.Info("start profiling process-agent")
@@ -289,7 +349,7 @@ func runAgent(exit chan struct{}) {
 		_ = log.Error(err)
 	}
 
-	cl, err := NewCollector(cfg)
+	cl, err := NewCollector(cfg, enabledChecks)
 	if err != nil {
 		log.Criticalf("Error creating collector: %s", err)
 		cleanupAndExit(1)

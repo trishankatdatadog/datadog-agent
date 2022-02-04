@@ -1,6 +1,12 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2016-present Datadog, Inc.
+
 package devicecheck
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
+	"github.com/DataDog/datadog-agent/pkg/version"
 
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/snmp/checkconfig"
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/snmp/common"
@@ -20,7 +27,7 @@ import (
 func TestProfileWithSysObjectIdDetection(t *testing.T) {
 	checkconfig.SetConfdPathAndCleanProfiles()
 	sess := session.CreateMockSession()
-	session.NewSession = func(*checkconfig.CheckConfig) (session.Session, error) {
+	sessionFactory := func(*checkconfig.CheckConfig) (session.Session, error) {
 		return sess, nil
 	}
 
@@ -39,7 +46,7 @@ profiles:
 	config, err := checkconfig.NewCheckConfig(rawInstanceConfig, rawInitConfig)
 	assert.Nil(t, err)
 
-	deviceCk, err := NewDeviceCheck(config, "1.2.3.4")
+	deviceCk, err := NewDeviceCheck(config, "1.2.3.4", sessionFactory)
 	assert.Nil(t, err)
 
 	sender := mocksender.NewMockSender("123") // required to initiate aggregator
@@ -263,16 +270,21 @@ profiles:
 
 	snmpTags := []string{"snmp_device:1.2.3.4", "snmp_profile:f5-big-ip", "device_vendor:f5", "snmp_host:foo_sys_name",
 		"some_tag:some_tag_value", "prefix:f", "suffix:oo_sys_name"}
+	telemetryTags := append(common.CopyStrings(snmpTags), "agent_version:"+version.AgentVersion)
 	row1Tags := append(common.CopyStrings(snmpTags), "interface:nameRow1", "interface_alias:descRow1")
 	row2Tags := append(common.CopyStrings(snmpTags), "interface:nameRow2", "interface_alias:descRow2")
 
-	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "", snmpTags)
 	sender.AssertMetric(t, "Gauge", "snmp.sysUpTimeInstance", float64(20), "", snmpTags)
 	sender.AssertMetric(t, "MonotonicCount", "snmp.ifInErrors", float64(141), "", row1Tags)
 	sender.AssertMetric(t, "MonotonicCount", "snmp.ifInErrors", float64(142), "", row2Tags)
 	sender.AssertMetric(t, "MonotonicCount", "snmp.ifInDiscards", float64(131), "", row1Tags)
 	sender.AssertMetric(t, "MonotonicCount", "snmp.ifInDiscards", float64(132), "", row2Tags)
 	sender.AssertMetric(t, "Gauge", "snmp.sysStatMemoryTotal", float64(30), "", snmpTags)
+
+	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "", telemetryTags)
+	sender.AssertMetricTaggedWith(t, "MonotonicCount", "datadog.snmp.check_interval", telemetryTags)
+	sender.AssertMetricTaggedWith(t, "Gauge", "datadog.snmp.check_duration", telemetryTags)
+	sender.AssertMetricTaggedWith(t, "Gauge", "datadog.snmp.submitted_metrics", telemetryTags)
 
 	assert.Equal(t, false, deviceCk.config.AutodetectProfile)
 
@@ -284,6 +296,37 @@ profiles:
 
 	assert.Len(t, deviceCk.config.Metrics, len(firstRunMetrics))
 	assert.Len(t, deviceCk.config.MetricTags, len(firstRunMetricsTags))
+}
+
+func TestDeviceCheck_Hostname(t *testing.T) {
+	checkconfig.SetConfdPathAndCleanProfiles()
+	// language=yaml
+	rawInstanceConfig := []byte(`
+ip_address: 1.2.3.4
+community_string: public
+`)
+	// language=yaml
+	rawInitConfig := []byte(`
+`)
+
+	config, err := checkconfig.NewCheckConfig(rawInstanceConfig, rawInitConfig)
+	assert.Nil(t, err)
+
+	deviceCk, err := NewDeviceCheck(config, "1.2.3.4", session.NewMockSession)
+	assert.Nil(t, err)
+
+	sender := mocksender.NewMockSender("123") // required to initiate aggregator
+	sender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	// without hostname
+	deviceCk.SetSender(report.NewMetricSender(sender, ""))
+	deviceCk.sender.Gauge("snmp.devices_monitored", float64(1), []string{"snmp_device:1.2.3.4"})
+	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "", []string{"snmp_device:1.2.3.4"})
+
+	// with hostname
+	deviceCk.SetSender(report.NewMetricSender(sender, "device:123"))
+	deviceCk.sender.Gauge("snmp.devices_monitored", float64(1), []string{"snmp_device:1.2.3.4"})
+	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "device:123", []string{"snmp_device:1.2.3.4"})
 }
 
 func TestDeviceCheck_GetHostname(t *testing.T) {
@@ -300,20 +343,45 @@ community_string: public
 	config, err := checkconfig.NewCheckConfig(rawInstanceConfig, rawInitConfig)
 	assert.Nil(t, err)
 
-	deviceCk, err := NewDeviceCheck(config, "1.2.3.4")
+	deviceCk, err := NewDeviceCheck(config, "1.2.3.4", session.NewMockSession)
 	assert.Nil(t, err)
 
-	sender := mocksender.NewMockSender("123") // required to initiate aggregator
-	sender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	hostname, err := deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "", hostname)
 
-	// without hostname
-	deviceCk.SetSender(report.NewMetricSender(sender, ""))
-	deviceCk.sender.Gauge("snmp.devices_monitored", float64(1), []string{"snmp_device:1.2.3.4"})
-	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "", []string{"snmp_device:1.2.3.4"})
-
-	// with hostname
 	deviceCk.config.UseDeviceIDAsHostname = true
-	deviceCk.SetSender(report.NewMetricSender(sender, "device:123"))
-	deviceCk.sender.Gauge("snmp.devices_monitored", float64(1), []string{"snmp_device:1.2.3.4"})
-	sender.AssertMetric(t, "Gauge", "snmp.devices_monitored", float64(1), "device:123", []string{"snmp_device:1.2.3.4"})
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "device:default:1.2.3.4", hostname)
+
+	deviceCk.config.UseDeviceIDAsHostname = false
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "", hostname)
+
+	deviceCk.config.UseDeviceIDAsHostname = true
+	deviceCk.config.Namespace = "a>b"
+	deviceCk.config.UpdateDeviceIDAndTags()
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "device:a-b:1.2.3.4", hostname)
+
+	deviceCk.config.Namespace = "a<b"
+	deviceCk.config.UpdateDeviceIDAndTags()
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "device:a-b:1.2.3.4", hostname)
+
+	deviceCk.config.Namespace = "a\n\r\tb"
+	deviceCk.config.UpdateDeviceIDAndTags()
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.Nil(t, err)
+	assert.Equal(t, "device:ab:1.2.3.4", hostname)
+
+	deviceCk.config.Namespace = strings.Repeat("a", 256)
+	deviceCk.config.UpdateDeviceIDAndTags()
+	hostname, err = deviceCk.GetDeviceHostname()
+	assert.NotNil(t, err)
+	assert.Equal(t, "", hostname)
 }

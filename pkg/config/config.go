@@ -20,7 +20,6 @@ import (
 
 	yaml "gopkg.in/yaml.v2"
 
-	"github.com/DataDog/datadog-agent/pkg/autodiscovery/common/types"
 	"github.com/DataDog/datadog-agent/pkg/collector/check/defaults"
 	"github.com/DataDog/datadog-agent/pkg/util/hostname/validate"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
@@ -55,7 +54,7 @@ const (
 	DefaultBatchMaxConcurrentSend = 0
 
 	// DefaultBatchMaxSize is the default HTTP batch max size (maximum number of events in a single batch) for logs
-	DefaultBatchMaxSize = 100
+	DefaultBatchMaxSize = 1000
 
 	// DefaultBatchMaxContentSize is the default HTTP batch max content size (before compression) for logs
 	// It is also the maximum possible size of a single event. Events exceeding this limit are dropped.
@@ -110,6 +109,9 @@ var (
 var (
 	// StartTime is the agent startup time
 	StartTime = time.Now()
+
+	// PrometheusScrapeChecksTransformer decodes the `prometheus_scrape.checks` parameter
+	PrometheusScrapeChecksTransformer func(string) interface{}
 )
 
 // MetadataProviders helps unmarshalling `metadata_providers` config param
@@ -137,7 +139,20 @@ type ConfigurationProviders struct {
 
 // Listeners helps unmarshalling `listeners` config param
 type Listeners struct {
-	Name string `mapstructure:"name"`
+	Name             string `mapstructure:"name"`
+	EnabledProviders map[string]struct{}
+}
+
+// SetEnabledProviders registers the enabled config providers in the listener config
+func (l *Listeners) SetEnabledProviders(ep map[string]struct{}) {
+	l.EnabledProviders = ep
+}
+
+// IsProviderEnabled returns whether a config provider is enabled
+func (l *Listeners) IsProviderEnabled(provider string) bool {
+	_, found := l.EnabledProviders[provider]
+
+	return found
 }
 
 // Proxy represents the configuration for proxies in the agent
@@ -162,6 +177,14 @@ type MetricMapping struct {
 	Tags      map[string]string `mapstructure:"tags" json:"tags"`
 }
 
+// Endpoint represent a datadog endpoint
+type Endpoint struct {
+	Site   string `mapstructure:"site" json:"site"`
+	URL    string `mapstructure:"url" json:"url"`
+	APIKey string `mapstructure:"api_key" json:"api_key"`
+	APPKey string `mapstructure:"app_key" json:"app_key" `
+}
+
 // Warnings represent the warnings in the config
 type Warnings struct {
 	TraceMallocEnabledWithPy2 bool
@@ -174,6 +197,21 @@ const (
 	// Metrics type covers series & sketches
 	Metrics DataType = "metrics"
 )
+
+// prometheusScrapeChecksTransformer is a trampoline function that delays the
+// resolution of `PrometheusScrapeChecksTransformer` from `InitConfig` (invoked
+// from an `init()` function to `cobra.(*Command).Execute` (invoked from `main.main`)
+//
+// Without it, the issue is that `config.PrometheusScrapeChecksTransformer` would be:
+// * written from an `init` function from `pkg/autodiscovery/common/types` and
+// * read from an `init` function here.
+// This would result in an undefined behaviour
+//
+// With this intermediate function, it’s read from `cobra.(*Command).Execute`
+// which is called from `main.main` which is guaranteed to be called after all `init`.
+func prometheusScrapeChecksTransformer(s string) interface{} {
+	return PrometheusScrapeChecksTransformer(s)
+}
 
 func init() {
 	osinit()
@@ -190,9 +228,10 @@ func InitConfig(config Config) {
 	config.BindEnv("site")
 	config.BindEnv("dd_url")
 	config.BindEnvAndSetDefault("app_key", "")
-	config.BindEnvAndSetDefault("cloud_provider_metadata", []string{"aws", "gcp", "azure", "alibaba"})
+	config.BindEnvAndSetDefault("cloud_provider_metadata", []string{"aws", "gcp", "azure", "alibaba", "oracle"})
 	config.SetDefault("proxy", nil)
 	config.BindEnvAndSetDefault("skip_ssl_validation", false)
+	config.BindEnvAndSetDefault("sslkeylogfile", "")
 	config.BindEnvAndSetDefault("hostname", "")
 	config.BindEnvAndSetDefault("hostname_file", "")
 	config.BindEnvAndSetDefault("tags", []string{})
@@ -244,6 +283,7 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("remote_configuration.config_root", "")
 	config.BindEnvAndSetDefault("remote_configuration.director_root", "")
 	config.BindEnvAndSetDefault("remote_configuration.refresh_interval", 1*time.Minute)
+	config.BindEnvAndSetDefault("remote_configuration.clients.ttl_seconds", 30*time.Second)
 
 	// Auto exit configuration
 	config.BindEnvAndSetDefault("auto_exit.validation_period", 60)
@@ -366,13 +406,19 @@ func InitConfig(config Config) {
 	config.BindEnv("procfs_path")
 	config.BindEnv("container_proc_root")
 	config.BindEnv("container_cgroup_root")
+	config.BindEnvAndSetDefault("ignore_host_etc", false)
 
 	config.BindEnvAndSetDefault("proc_root", "/proc")
 	config.BindEnvAndSetDefault("histogram_aggregates", []string{"max", "median", "avg", "count"})
 	config.BindEnvAndSetDefault("histogram_percentiles", []string{"0.95"})
 	config.BindEnvAndSetDefault("aggregator_stop_timeout", 2)
 	config.BindEnvAndSetDefault("aggregator_buffer_size", 100)
+	config.BindEnvAndSetDefault("aggregator_use_tags_store", true)
 	config.BindEnvAndSetDefault("basic_telemetry_add_container_tags", false) // configure adding the agent container tags to the basic agent telemetry metrics (e.g. `datadog.agent.running`)
+	config.BindEnvAndSetDefault("aggregator_flush_metrics_and_serialize_in_parallel", true)
+	config.BindEnvAndSetDefault("aggregator_flush_metrics_and_serialize_in_parallel_chan_size", 200)
+	config.BindEnvAndSetDefault("aggregator_flush_metrics_and_serialize_in_parallel_buffer_size", 4000)
+
 	// Serializer
 	config.BindEnvAndSetDefault("enable_stream_payload_serialization", true)
 	config.BindEnvAndSetDefault("enable_service_checks_stream_payload_serialization", true)
@@ -383,10 +429,9 @@ func InitConfig(config Config) {
 	// Warning: do not change the two following values. Your payloads will get dropped by Datadog's intake.
 	config.BindEnvAndSetDefault("serializer_max_payload_size", 2*megaByte+megaByte/2)
 	config.BindEnvAndSetDefault("serializer_max_uncompressed_payload_size", 4*megaByte)
+	config.BindEnvAndSetDefault("serializer_max_series_points_per_payload", 10000)
 
-	config.BindEnvAndSetDefault("use_v2_api.events", false)
 	config.BindEnvAndSetDefault("use_v2_api.series", false)
-	config.BindEnvAndSetDefault("use_v2_api.service_checks", false)
 	// Serializer: allow user to blacklist any kind of payload to be sent
 	config.BindEnvAndSetDefault("enable_payloads.events", true)
 	config.BindEnvAndSetDefault("enable_payloads.series", true)
@@ -514,6 +559,7 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("kubernetes_pod_labels_as_tags", map[string]string{})
 	config.BindEnvAndSetDefault("kubernetes_pod_annotations_as_tags", map[string]string{})
 	config.BindEnvAndSetDefault("kubernetes_node_labels_as_tags", map[string]string{})
+	config.BindEnvAndSetDefault("kubernetes_node_annotations_as_host_aliases", []string{"cluster.k8s.io/machine"})
 	config.BindEnvAndSetDefault("kubernetes_namespace_labels_as_tags", map[string]string{})
 	config.BindEnvAndSetDefault("container_cgroup_prefix", "")
 
@@ -523,8 +569,8 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("cri_query_timeout", int64(5))      // in seconds
 
 	// Containerd
-	// We only support containerd in Kubernetes. By default containerd cri uses `k8s.io` https://github.com/containerd/cri/blob/release/1.2/pkg/constants/constants.go#L22-L23
-	config.BindEnvAndSetDefault("containerd_namespace", "k8s.io")
+	config.BindEnvAndSetDefault("containerd_namespace", "")
+	config.BindEnvAndSetDefault("containerd_namespaces", []string{}) // alias for containerd_namespace
 	config.BindEnvAndSetDefault("container_env_as_tags", map[string]string{})
 	config.BindEnvAndSetDefault("container_labels_as_tags", map[string]string{})
 
@@ -556,13 +602,8 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("prometheus_scrape.enabled", false)           // Enables the prometheus config provider
 	config.BindEnvAndSetDefault("prometheus_scrape.service_endpoints", false) // Enables Service Endpoints checks in the prometheus config provider
 	config.BindEnv("prometheus_scrape.checks")                                // Defines any extra prometheus/openmetrics check configurations to be handled by the prometheus config provider
-	config.SetEnvKeyTransformer("prometheus_scrape.checks", func(in string) interface{} {
-		var promChecks []*types.PrometheusCheck
-		if err := json.Unmarshal([]byte(in), &promChecks); err != nil {
-			log.Warnf(`"prometheus_scrape.checks" can not be parsed: %v`, err)
-		}
-		return promChecks
-	})
+	config.SetEnvKeyTransformer("prometheus_scrape.checks", prometheusScrapeChecksTransformer)
+	config.BindEnvAndSetDefault("prometheus_scrape.version", 1) // Version of the openmetrics check to be scheduled by the Prometheus auto-discovery
 
 	// SNMP
 	config.SetKnown("snmp_listener.discovery_interval")
@@ -599,6 +640,7 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("cluster_agent.server.read_timeout_seconds", 2)
 	config.BindEnvAndSetDefault("cluster_agent.server.write_timeout_seconds", 2)
 	config.BindEnvAndSetDefault("cluster_agent.server.idle_timeout_seconds", 60)
+	config.BindEnvAndSetDefault("cluster_agent.serve_nozzle_data", false)
 	config.BindEnvAndSetDefault("metrics_port", "5000")
 
 	// Metadata endpoints
@@ -684,18 +726,6 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("internal_profiling.block_profile_rate", 0)
 	config.BindEnvAndSetDefault("internal_profiling.mutex_profile_fraction", 0)
 	config.BindEnvAndSetDefault("internal_profiling.enable_goroutine_stacktraces", false)
-
-	// Process agent
-	config.SetDefault("process_config.enabled", "false")
-	// process_config.enabled is only used on Windows by the core agent to start the process agent service.
-	// it can be set from file, but not from env. Override it with value from DD_PROCESS_AGENT_ENABLED.
-	ddProcessAgentEnabled, found := os.LookupEnv("DD_PROCESS_AGENT_ENABLED")
-	if found {
-		AddOverride("process_config.enabled", ddProcessAgentEnabled)
-	}
-
-	config.BindEnv("process_config.process_dd_url", "")
-
 	// Logs Agent
 
 	// External Use: modify those parameters to configure the logs-agent.
@@ -798,6 +828,7 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("external_metrics_provider.endpoint", "")                 // Override the Datadog API endpoint to query external metrics from
 	config.BindEnvAndSetDefault("external_metrics_provider.api_key", "")                  // Override the Datadog API Key for external metrics endpoint
 	config.BindEnvAndSetDefault("external_metrics_provider.app_key", "")                  // Override the Datadog APP Key for external metrics endpoint
+	config.SetKnown("external_metrics_provider.endpoints")                                // List of redundant endpoints to query external metrics from
 	config.BindEnvAndSetDefault("external_metrics_provider.refresh_period", 30)           // value in seconds. Frequency of calls to Datadog to refresh metric values
 	config.BindEnvAndSetDefault("external_metrics_provider.batch_window", 10)             // value in seconds. Batch the events from the Autoscalers informer to push updates to the ConfigMap (GlobalStore)
 	config.BindEnvAndSetDefault("external_metrics_provider.max_age", 120)                 // value in seconds. 4 cycles from the Autoscaler controller (up to Kubernetes 1.11) is enough to consider a metric stale
@@ -876,46 +907,18 @@ func InitConfig(config Config) {
 	config.BindEnv("orchestrator_explorer.orchestrator_dd_url")
 	config.BindEnv("orchestrator_explorer.orchestrator_additional_endpoints")
 
+	// Container lifecycle configuration
+	config.BindEnvAndSetDefault("container_lifecycle.enabled", false)
+	config.BindEnv("container_lifecycle.dd_url")
+	config.BindEnv("container_lifecycle.additional_endpoints")
+
 	// Orchestrator Explorer - process agent
 	// DEPRECATED in favor of `orchestrator_explorer.orchestrator_dd_url` setting. If both are set `orchestrator_explorer.orchestrator_dd_url` will take precedence.
-	config.BindEnv("process_config.orchestrator_dd_url")
+	config.BindEnv("process_config.orchestrator_dd_url", "DD_PROCESS_CONFIG_ORCHESTRATOR_DD_URL", "DD_PROCESS_AGENT_ORCHESTRATOR_DD_URL")
 	// DEPRECATED in favor of `orchestrator_explorer.orchestrator_additional_endpoints` setting. If both are set `orchestrator_explorer.orchestrator_additional_endpoints` will take precedence.
 	config.SetKnown("process_config.orchestrator_additional_endpoints.*")
 	config.SetKnown("orchestrator_explorer.orchestrator_additional_endpoints.*")
 	config.BindEnvAndSetDefault("orchestrator_explorer.extra_tags", []string{})
-
-	// Process agent
-	config.SetKnown("process_config.dd_agent_env")
-	config.SetKnown("process_config.enabled")
-	config.SetKnown("process_config.intervals.process_realtime")
-	config.SetKnown("process_config.queue_size")
-	config.SetKnown("process_config.rt_queue_size")
-	config.SetKnown("process_config.max_per_message")
-	config.SetKnown("process_config.max_ctr_procs_per_message")
-	config.SetKnown("process_config.cmd_port")
-	config.SetKnown("process_config.intervals.process")
-	config.SetKnown("process_config.blacklist_patterns")
-	config.SetKnown("process_config.intervals.container")
-	config.SetKnown("process_config.intervals.container_realtime")
-	config.SetKnown("process_config.dd_agent_bin")
-	config.SetKnown("process_config.custom_sensitive_words")
-	config.SetKnown("process_config.scrub_args")
-	config.SetKnown("process_config.strip_proc_arguments")
-	config.SetKnown("process_config.windows.args_refresh_interval")
-	config.SetKnown("process_config.windows.add_new_args")
-	config.SetKnown("process_config.windows.use_perf_counters")
-	config.SetKnown("process_config.additional_endpoints.*")
-	config.SetKnown("process_config.container_source")
-	config.SetKnown("process_config.intervals.connections")
-	config.SetKnown("process_config.expvar_port")
-	config.SetKnown("process_config.log_file")
-	config.SetKnown("process_config.internal_profiling.enabled")
-
-	config.BindEnvAndSetDefault("process_config.remote_tagger", true)
-
-	// Process Discovery Check
-	config.BindEnvAndSetDefault("process_config.process_discovery.enabled", false)
-	config.BindEnvAndSetDefault("process_config.process_discovery.interval", 4*time.Hour)
 
 	// Network
 	config.BindEnv("network.id")
@@ -959,7 +962,7 @@ func InitConfig(config Config) {
 	config.BindEnvAndSetDefault("runtime_security_config.event_server.retention", 6)
 	config.BindEnvAndSetDefault("runtime_security_config.event_server.rate", 10)
 	config.BindEnvAndSetDefault("runtime_security_config.load_controller.events_count_threshold", 20000)
-	config.BindEnvAndSetDefault("runtime_security_config.load_controller.discarder_timeout", 10)
+	config.BindEnvAndSetDefault("runtime_security_config.load_controller.discarder_timeout", 60)
 	config.BindEnvAndSetDefault("runtime_security_config.load_controller.control_period", 2)
 	config.BindEnvAndSetDefault("runtime_security_config.pid_cache_size", 10000)
 	config.BindEnvAndSetDefault("runtime_security_config.cookie_cache_size", 100)
@@ -970,6 +973,7 @@ func InitConfig(config Config) {
 	bindEnvAndSetLogsConfigKeys(config, "runtime_security_config.endpoints.")
 	config.BindEnvAndSetDefault("runtime_security_config.self_test.enabled", true)
 	config.BindEnvAndSetDefault("runtime_security_config.enable_remote_configuration", false)
+	config.BindEnvAndSetDefault("runtime_security_config.enable_runtime_compiled_constants", false)
 
 	// Serverless Agent
 	config.BindEnvAndSetDefault("serverless.logs_enabled", true)
@@ -985,9 +989,10 @@ func InitConfig(config Config) {
 	setupAPM(config)
 	setupAppSec(config)
 	SetupOTLP(config)
+	setupProcesses(config)
 }
 
-var ddURLRegexp = regexp.MustCompile(`^app(\.(us|eu)\d)?\.datad(oghq|0g)\.(com|eu)$`)
+var ddURLRegexp = regexp.MustCompile(`^app(\.(us|eu)\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$`)
 
 // GetProxies returns the proxy settings from the configuration
 func GetProxies() *Proxy {
@@ -1110,15 +1115,21 @@ func findUnknownKeys(config Config) []string {
 	return unknownKeys
 }
 
-func findUnknownEnvVars(config Config) []string {
+func findUnknownEnvVars(config Config, environ []string) []string {
 	var unknownVars []string
 
-	knownVars := map[string]struct{}{}
+	knownVars := map[string]struct{}{
+		// these variables are used by the agent, but not via the Config struct,
+		// so must be listed separately.
+		"DD_PROXY_NO_PROXY": {},
+		"DD_PROXY_HTTP":     {},
+		"DD_PROXY_HTTPS":    {},
+	}
 	for _, key := range config.GetEnvVars() {
 		knownVars[key] = struct{}{}
 	}
 
-	for _, equality := range os.Environ() {
+	for _, equality := range environ {
 		key := strings.SplitN(equality, "=", 2)[0]
 		if !strings.HasPrefix(key, "DD_") {
 			continue
@@ -1128,6 +1139,24 @@ func findUnknownEnvVars(config Config) []string {
 		}
 	}
 	return unknownVars
+}
+
+func useHostEtc(config Config) {
+	if IsContainerized() && pathExists("/host/etc") {
+		if !config.GetBool("ignore_host_etc") {
+			if val, isSet := os.LookupEnv("HOST_ETC"); !isSet {
+				// We want to detect the host distro informations instead of the one from the container.
+				// 'HOST_ETC' is used by some libraries like gopsutil and by the system-probe to
+				// download the right kernel headers.
+				os.Setenv("HOST_ETC", "/host/etc")
+				log.Debug("Setting environment variable HOST_ETC to '/host/etc'")
+			} else {
+				log.Debugf("'/host/etc' folder detected but HOST_ETC is already set to '%s', leaving it untouched", val)
+			}
+		} else {
+			log.Debug("/host/etc detected but ignored because 'ignore_host_etc' is set to true")
+		}
+	}
 }
 
 func load(config Config, origin string, loadSecret bool) (*Warnings, error) {
@@ -1155,7 +1184,7 @@ func load(config Config, origin string, loadSecret bool) (*Warnings, error) {
 		log.Warnf("Unknown key in config file: %v", key)
 	}
 
-	for _, v := range findUnknownEnvVars(config) {
+	for _, v := range findUnknownEnvVars(config, os.Environ()) {
 		log.Warnf("Unknown environment variable: %v", v)
 	}
 
@@ -1176,6 +1205,7 @@ func load(config Config, origin string, loadSecret bool) (*Warnings, error) {
 		AddOverride("python_version", DefaultPython)
 	}
 
+	useHostEtc(config)
 	loadProxyFromEnv(config)
 	SanitizeAPIKeyConfig(config, "api_key")
 	// setTracemallocEnabled *must* be called before setNumWorkers
@@ -1347,7 +1377,12 @@ func getMultipleEndpointsWithConfig(config Config) (map[string][]string, error) 
 	}
 
 	additionalEndpoints := config.GetStringMapStringSlice("additional_endpoints")
-	// merge additional endpoints into keysPerDomain
+
+	return MergeAdditionalEndpoints(keysPerDomain, additionalEndpoints)
+}
+
+// MergeAdditionalEndpoints merges additional endpoints into keysPerDomain
+func MergeAdditionalEndpoints(keysPerDomain, additionalEndpoints map[string][]string) (map[string][]string, error) {
 	for domain, apiKeys := range additionalEndpoints {
 
 		// Validating domain
@@ -1597,7 +1632,7 @@ func GetVectorURL(datatype DataType) (string, error) {
 func GetInventoriesMinInterval() time.Duration {
 	minInterval := time.Duration(Datadog.GetInt("inventories_min_interval")) * time.Second
 	if minInterval == 0 {
-		minInterval = DefaultInventoriesMinInterval
+		minInterval = DefaultInventoriesMinInterval * time.Second
 	}
 	return minInterval
 }
@@ -1606,7 +1641,7 @@ func GetInventoriesMinInterval() time.Duration {
 func GetInventoriesMaxInterval() time.Duration {
 	maxInterval := time.Duration(Datadog.GetInt("inventories_max_interval")) * time.Second
 	if maxInterval == 0 {
-		maxInterval = DefaultInventoriesMaxInterval
+		maxInterval = DefaultInventoriesMaxInterval * time.Second
 	}
 	return maxInterval
 }

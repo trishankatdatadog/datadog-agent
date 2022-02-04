@@ -3,6 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+//go:build kubeapiserver && kubelet
 // +build kubeapiserver,kubelet
 
 package kubemetadata
@@ -36,6 +37,9 @@ type FakeDCAClient struct {
 
 	NodeLabels    map[string]string
 	NodeLabelsErr error
+
+	NodeAnnotations    map[string]string
+	NodeAnnotationsErr error
 
 	NamespaceLabels    map[string]string
 	NamespaceLabelsErr error
@@ -73,6 +77,10 @@ func (f *FakeDCAClient) GetVersion() (version.Version, error) {
 
 func (f *FakeDCAClient) GetNodeLabels(nodeName string) (map[string]string, error) {
 	return f.NodeLabels, f.NodeLabelsErr
+}
+
+func (f *FakeDCAClient) GetNodeAnnotations(nodeName string) (map[string]string, error) {
+	return f.NodeAnnotations, f.NodeLabelsErr
 }
 
 func (f *FakeDCAClient) GetNamespaceLabels(nsName string) (map[string]string, error) {
