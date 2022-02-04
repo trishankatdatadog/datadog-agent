@@ -7,14 +7,15 @@ package traps
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/gosnmp/gosnmp"
 )
 
-func validateCredentials(p *gosnmp.SnmpPacket, c *Config) error {
+func validatePacket(p *gosnmp.SnmpPacket, c *Config) error {
 	if p.Version != gosnmp.Version2c {
-		return fmt.Errorf("Unsupported version: %s", p.Version)
+		// v3 Packets are already decrypted and validated by gosnmp
+		// v1 Packets don't need to be validated
+		return nil
 	}
 
 	// At least one of the known community strings must match.
@@ -24,5 +25,5 @@ func validateCredentials(p *gosnmp.SnmpPacket, c *Config) error {
 		}
 	}
 
-	return errors.New("Unknown community string")
+	return errors.New("unknown community string")
 }

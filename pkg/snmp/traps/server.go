@@ -71,7 +71,7 @@ func NewTrapServer() (*TrapServer, error) {
 
 	packets := make(PacketsChannel, packetsChanSize)
 
-	listener, err := startSNMPv2Listener(config, packets)
+	listener, err := startSNMPTrapListener(config, packets)
 	if err != nil {
 		return nil, err
 	}
@@ -85,12 +85,16 @@ func NewTrapServer() (*TrapServer, error) {
 	return server, nil
 }
 
-func startSNMPv2Listener(c *Config, packets PacketsChannel) (*gosnmp.TrapListener, error) {
+func startSNMPTrapListener(c *Config, packets PacketsChannel) (*gosnmp.TrapListener, error) {
+	var err error
 	listener := gosnmp.NewTrapListener()
-	listener.Params = c.BuildV2Params()
+	listener.Params, err = c.BuildSNMPParams()
+	if err != nil {
+		return nil, err
+	}
 
 	listener.OnNewTrap = func(p *gosnmp.SnmpPacket, u *net.UDPAddr) {
-		if err := validateCredentials(p, c); err != nil {
+		if err := validatePacket(p, c); err != nil {
 			log.Warnf("Invalid credentials from %s on listener %s, dropping packet", u.String(), c.Addr())
 			trapsPacketsAuthErrors.Add(1)
 			return

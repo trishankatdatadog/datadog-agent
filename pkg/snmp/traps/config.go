@@ -6,10 +6,13 @@
 package traps
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/config"
+	"github.com/DataDog/datadog-agent/pkg/util"
 	"github.com/gosnmp/gosnmp"
 )
 
@@ -18,10 +21,23 @@ func IsEnabled() bool {
 	return config.Datadog.GetBool("snmp_traps_enabled")
 }
 
+// UserV3 contains the definition of one SNMPv3 user with its username and its auth
+// parameters.
+// TODO: Add support for EngineID differentiation
+type UserV3 struct {
+	Username     string `mapstructure:"user" yaml:"user"`
+	AuthKey      string `mapstructure:"authKey" yaml:"authKey"`
+	AuthProtocol string `mapstructure:"authProtocol" yaml:"authProtocol"`
+	PrivKey      string `mapstructure:"privKey" yaml:"privKey"`
+	PrivProtocol string `mapstructure:"privProtocol" yaml:"privProtocol"`
+}
+
 // Config contains configuration for SNMP trap listeners.
 // YAML field tags provided for test marshalling purposes.
+// TODO: Add namespace
 type Config struct {
 	Port             uint16   `mapstructure:"port" yaml:"port"`
+	Users            []UserV3 `mapstructure:"users" yaml:"users"`
 	CommunityStrings []string `mapstructure:"community_strings" yaml:"community_strings"`
 	BindHost         string   `mapstructure:"bind_host" yaml:"bind_host"`
 	StopTimeout      int      `mapstructure:"stop_timeout" yaml:"stop_timeout"`
@@ -35,17 +51,20 @@ func ReadConfig() (*Config, error) {
 		return nil, err
 	}
 
-	// Validate required fields.
-	if c.CommunityStrings == nil || len(c.CommunityStrings) == 0 {
-		return nil, errors.New("`community_strings` is required and must be non-empty")
+	// gosnmp only supports one v3 user at the moment.
+	// TODO: Allow more users
+	if len(c.Users) > 1 {
+		return nil, errors.New("only one user is currently supported in snmp_traps_config")
 	}
 
 	// Set defaults.
 	if c.Port == 0 {
+		// TODO: The default port 162 cannot be opened in most cases wit the dd-agent user.
 		c.Port = defaultPort
 	}
 	if c.BindHost == "" {
 		// Default to global bind_host option.
+		// TODO: The default value "localhost" is too restrictive for traps.
 		c.BindHost = config.GetBindHost()
 	}
 	if c.StopTimeout == 0 {
@@ -60,12 +79,76 @@ func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.BindHost, c.Port)
 }
 
+func (c *Config) BuildAuthoritativeEngineID() string {
+	baseBytes := []byte{0x80, 0xff, 0xff, 0xff, 0xff} // Replace last 4 bytes with Datadog PEN number
+	hostname := util.GetHostname(context.TODO())[:16]
+}
+
 // BuildV2Params returns a valid GoSNMP SNMPv2 params structure from configuration.
-func (c *Config) BuildV2Params() *gosnmp.GoSNMP {
-	return &gosnmp.GoSNMP{
-		Port:      c.Port,
-		Transport: "udp",
-		Version:   gosnmp.Version2c,
-		Logger:    gosnmp.NewLogger(&trapLogger{}),
+func (c *Config) BuildSNMPParams() (*gosnmp.GoSNMP, error) {
+	if len(c.Users) == 0 {
+		return &gosnmp.GoSNMP{
+			Port:      c.Port,
+			Transport: "udp",
+			Version:   gosnmp.Version2c, // No user configured, let's user Version2 which is enough and doesn't require setting up fake security data.
+			Logger:    gosnmp.NewLogger(&trapLogger{}),
+		}, nil
 	}
+	user := c.Users[0]
+	var authProtocol gosnmp.SnmpV3AuthProtocol
+	lowerAuthProtocol := strings.ToLower(user.AuthProtocol)
+	if lowerAuthProtocol == "" {
+		authProtocol = gosnmp.NoAuth
+	} else if lowerAuthProtocol == "md5" {
+		authProtocol = gosnmp.MD5
+	} else if lowerAuthProtocol == "sha" {
+		authProtocol = gosnmp.SHA
+	} else {
+		return nil, fmt.Errorf("unsupported authentication protocol: %s", user.AuthProtocol)
+	}
+
+	var privProtocol gosnmp.SnmpV3PrivProtocol
+	lowerPrivProtocol := strings.ToLower(user.PrivProtocol)
+	if lowerPrivProtocol == "" {
+		privProtocol = gosnmp.NoPriv
+	} else if lowerPrivProtocol == "des" {
+		privProtocol = gosnmp.DES
+	} else if lowerPrivProtocol == "aes" {
+		privProtocol = gosnmp.AES
+	} else if lowerPrivProtocol == "aes192" {
+		privProtocol = gosnmp.AES192
+	} else if lowerPrivProtocol == "aes192c" {
+		privProtocol = gosnmp.AES192C
+	} else if lowerPrivProtocol == "aes256" {
+		privProtocol = gosnmp.AES256
+	} else if lowerPrivProtocol == "aes256c" {
+		privProtocol = gosnmp.AES256C
+	} else {
+		return nil, fmt.Errorf("unsupported privacy protocol: %s", user.PrivProtocol)
+	}
+
+	msgFlags := gosnmp.NoAuthNoPriv
+	if user.PrivKey != "" {
+		msgFlags = gosnmp.AuthPriv
+	} else if user.AuthKey != "" {
+		msgFlags = gosnmp.AuthNoPriv
+	}
+
+	return &gosnmp.GoSNMP{
+		Port:          c.Port,
+		Transport:     "udp",
+		Version:       gosnmp.Version3, // Always using version3 for traps, only option that works with all SNMP versions simultaneously
+		SecurityModel: gosnmp.UserSecurityModel,
+		MsgFlags:      msgFlags,
+		SecurityParameters: &gosnmp.UsmSecurityParameters{
+			UserName: user.Username,
+			// TODO: Make sure that gosnmp always uses the same engineID upon agent restarts.
+			AuthoritativeEngineID:    "\x80\x00\x4f\xb8\x05\x67\x72\x6f\x6d\x6d\x69\x74\x20",
+			AuthenticationProtocol:   authProtocol,
+			AuthenticationPassphrase: user.AuthKey,
+			PrivacyProtocol:          privProtocol,
+			PrivacyPassphrase:        user.PrivKey,
+		},
+		Logger: gosnmp.NewLogger(&trapLogger{}),
+	}, nil
 }
