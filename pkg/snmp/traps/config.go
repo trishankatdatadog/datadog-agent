@@ -79,7 +79,7 @@ func ReadConfig() (*Config, error) {
 	}
 	c.Namespace, err = common.NormalizeNamespace(c.Namespace)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid snmp_traps_config: %w", err)
 	}
 
 	return &c, nil

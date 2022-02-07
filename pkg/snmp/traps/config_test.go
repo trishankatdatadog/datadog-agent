@@ -6,6 +6,7 @@
 package traps
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/DataDog/datadog-agent/pkg/util"
@@ -111,6 +112,26 @@ func TestBuildAuthoritativeEngineID(t *testing.T) {
 	config := Config{}
 	engineID := config.BuildAuthoritativeEngineID()
 	assert.Equal(t, [28]byte{0x80, 0xff, 0xff, 0xff, 0xff, 0x56, 0x65, 0x72, 0x79, 0x4c, 0x6f, 0x6e, 0x67, 0x48, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x54, 0x68, 0x61, 0x74, 0x44, 0x6f, 0x65}, engineID)
+}
+
+func TestNamespaceIsNormalized(t *testing.T) {
+	Configure(t, Config{
+		Namespace: "><\n\r\tfoo",
+	})
+
+	config, err := ReadConfig()
+	assert.NoError(t, err)
+
+	assert.Equal(t, "--foo", config.Namespace)
+}
+
+func TestInvalidNamespace(t *testing.T) {
+	Configure(t, Config{
+		Namespace: strings.Repeat("x", 101),
+	})
+
+	_, err := ReadConfig()
+	assert.Error(t, err)
 }
 
 func TestNamespaceSetGlobally(t *testing.T) {
