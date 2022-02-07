@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/snmp/common"
 	"github.com/DataDog/datadog-agent/pkg/config"
 	"github.com/DataDog/datadog-agent/pkg/util"
 	"github.com/gosnmp/gosnmp"
@@ -72,8 +73,13 @@ func ReadConfig() (*Config, error) {
 		c.StopTimeout = defaultStopTimeout
 	}
 	c.AuthoritativeEngineID = c.BuildAuthoritativeEngineID()
+
 	if c.Namespace == "" {
 		c.Namespace = config.Datadog.GetString("network_devices.namespace")
+	}
+	c.Namespace, err = common.NormalizeNamespace(c.Namespace)
+	if err != nil {
+		return nil, err
 	}
 
 	return &c, nil
