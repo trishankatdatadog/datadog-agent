@@ -39,6 +39,7 @@ func TestFullConfig(t *testing.T) {
 		BindHost:         "127.0.0.1",
 		CommunityStrings: []string{"public"},
 		StopTimeout:      12,
+		Namespace:        "foo",
 	})
 	config, err := ReadConfig()
 	assert.NoError(t, err)
@@ -46,6 +47,7 @@ func TestFullConfig(t *testing.T) {
 	assert.Equal(t, 12, config.StopTimeout)
 	assert.Equal(t, []string{"public"}, config.CommunityStrings)
 	assert.Equal(t, "127.0.0.1", config.BindHost)
+	assert.Equal(t, "foo", config.Namespace)
 	assert.Equal(t, []UserV3{
 		{
 			Username:     "user",
@@ -82,6 +84,7 @@ func TestMinimalConfig(t *testing.T) {
 	assert.Equal(t, []string{}, config.CommunityStrings)
 	assert.Equal(t, "localhost", config.BindHost)
 	assert.Equal(t, []UserV3{}, config.Users)
+	assert.Equal(t, "default", config.Namespace)
 
 	params, err := config.BuildSNMPParams()
 	assert.NoError(t, err)
@@ -108,4 +111,22 @@ func TestBuildAuthoritativeEngineID(t *testing.T) {
 	config := Config{}
 	engineID := config.BuildAuthoritativeEngineID()
 	assert.Equal(t, [28]byte{0x80, 0xff, 0xff, 0xff, 0xff, 0x56, 0x65, 0x72, 0x79, 0x4c, 0x6f, 0x6e, 0x67, 0x48, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x54, 0x68, 0x61, 0x74, 0x44, 0x6f, 0x65}, engineID)
+}
+
+func TestNamespaceSetGlobally(t *testing.T) {
+	ConfigureWithGlobalNamespace(t, Config{}, "foo")
+
+	config, err := ReadConfig()
+	assert.NoError(t, err)
+
+	assert.Equal(t, "foo", config.Namespace)
+}
+
+func TestNamespaceSetBothGloballyAndLocally(t *testing.T) {
+	ConfigureWithGlobalNamespace(t, Config{Namespace: "bar"}, "foo")
+
+	config, err := ReadConfig()
+	assert.NoError(t, err)
+
+	assert.Equal(t, "bar", config.Namespace)
 }

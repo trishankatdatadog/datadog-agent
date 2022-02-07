@@ -34,7 +34,6 @@ type UserV3 struct {
 
 // Config contains configuration for SNMP trap listeners.
 // YAML field tags provided for test marshalling purposes.
-// TODO: Add namespace
 type Config struct {
 	Port                  uint16   `mapstructure:"port" yaml:"port"`
 	Users                 []UserV3 `mapstructure:"users" yaml:"users"`
@@ -42,6 +41,7 @@ type Config struct {
 	BindHost              string   `mapstructure:"bind_host" yaml:"bind_host"`
 	StopTimeout           int      `mapstructure:"stop_timeout" yaml:"stop_timeout"`
 	AuthoritativeEngineID [28]byte `mapstructure:"-" yaml:"-"`
+	Namespace             string   `mapstructure:"namespace" yaml:"namespace"`
 }
 
 // ReadConfig builds and returns configuration from Agent configuration.
@@ -71,8 +71,10 @@ func ReadConfig() (*Config, error) {
 	if c.StopTimeout == 0 {
 		c.StopTimeout = defaultStopTimeout
 	}
-
 	c.AuthoritativeEngineID = c.BuildAuthoritativeEngineID()
+	if c.Namespace == "" {
+		c.Namespace = config.Datadog.GetString("network_devices.namespace")
+	}
 
 	return &c, nil
 }
