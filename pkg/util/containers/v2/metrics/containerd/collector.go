@@ -10,6 +10,7 @@ package containerd
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	wstats "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/stats"
@@ -21,15 +22,18 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/DataDog/datadog-agent/pkg/config"
-	"github.com/DataDog/datadog-agent/pkg/util"
 	cutil "github.com/DataDog/datadog-agent/pkg/util/containerd"
 	"github.com/DataDog/datadog-agent/pkg/util/containers/v2/metrics/provider"
+	"github.com/DataDog/datadog-agent/pkg/util/pointer"
 	"github.com/DataDog/datadog-agent/pkg/util/system"
 	"github.com/DataDog/datadog-agent/pkg/workloadmeta"
 )
 
 const (
 	containerdCollectorID = "containerd"
+
+	pidCacheGCInterval     = 60 * time.Second
+	pidCacheFullRefreshKey = "refreshTime"
 )
 
 func init() {
@@ -47,6 +51,7 @@ func init() {
 type containerdCollector struct {
 	client            cutil.ContainerdItf
 	workloadmetaStore workloadmeta.Store
+	pidCache          *provider.Cache
 }
 
 func newContainerdCollector() (*containerdCollector, error) {
@@ -62,6 +67,7 @@ func newContainerdCollector() (*containerdCollector, error) {
 	return &containerdCollector{
 		client:            client,
 		workloadmetaStore: workloadmeta.GetGlobalStore(),
+		pidCache:          provider.NewCache(pidCacheGCInterval),
 	}, nil
 }
 
@@ -78,7 +84,7 @@ func (c *containerdCollector) GetContainerStats(containerID string, cacheValidit
 	}
 	c.client.SetCurrentNamespace(namespace)
 
-	metrics, err := c.getContainerdMetrics(containerID, cacheValidity)
+	metrics, err := c.getContainerdMetrics(containerID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +133,7 @@ func (c *containerdCollector) GetContainerNetworkStats(containerID string, cache
 	}
 	c.client.SetCurrentNamespace(namespace)
 
-	metrics, err := c.getContainerdMetrics(containerID, cacheValidity)
+	metrics, err := c.getContainerdMetrics(containerID)
 	if err != nil {
 		return nil, err
 	}
@@ -143,10 +149,52 @@ func (c *containerdCollector) GetContainerNetworkStats(containerID string, cache
 	}
 }
 
+// GetContainerIDForPID returns the container ID for given PID
+func (c *containerdCollector) GetContainerIDForPID(pid int, cacheValidity time.Duration) (string, error) {
+	currentTime := time.Now()
+	strPid := strconv.Itoa(pid)
+
+	cID, found, _ := c.pidCache.Get(currentTime, strPid, cacheValidity)
+	if found {
+		return cID.(string), nil
+	}
+
+	// If we've done a full refresh within cacheValidity, we do not trigger another full refresh
+	_, found, _ = c.pidCache.Get(currentTime, pidCacheFullRefreshKey, cacheValidity)
+	if found {
+		return "", nil
+	}
+
+	// Full refresh
+	containers, err := c.client.Containers()
+	if err != nil {
+		return "", err
+	}
+
+	c.pidCache.Store(currentTime, pidCacheFullRefreshKey, struct{}{}, nil)
+	for _, container := range containers {
+		_, _ = c.getPIDs(currentTime, container)
+	}
+
+	// Use harcoded cacheValidity as input one could be 0
+	cID, found, _ = c.pidCache.Get(currentTime, strPid, time.Second)
+	if found {
+		return cID.(string), nil
+	}
+
+	return "", nil
+}
+
+// GetSelfContainerID returns current process container ID
+func (c *containerdCollector) GetSelfContainerID() (string, error) {
+	// Not available
+	return "", nil
+}
+
 // This method returns interface{} because the metrics could be an instance of
 // v1.Metrics (for Linux) or stats.Statistics (Windows) and they don't share a
 // common interface.
-func (c *containerdCollector) getContainerdMetrics(containerID string, cacheValidity time.Duration) (interface{}, error) {
+func (c *containerdCollector) getContainerdMetrics(containerID string) (interface{}, error) {
 	container, err := c.client.Container(containerID)
 	if err != nil {
 		return nil, fmt.Errorf("could not get container with ID %s: %s", containerID, err)
@@ -163,6 +211,27 @@ func (c *containerdCollector) getContainerdMetrics(containerID string, cacheVali
 	}
 
 	return metrics, nil
+}
+
+func (c *containerdCollector) containerNamespace(containerID string) (string, error) {
+	container, err := c.workloadmetaStore.GetContainer(containerID)
+	if err != nil {
+		return "", err
+	}
+
+	return container.Namespace, nil
+}
+
+func (c *containerdCollector) getPIDs(currentTime time.Time, container containerd.Container) ([]containerd.ProcessInfo, error) {
+	processes, err := c.client.TaskPids(container)
+	if err != nil {
+		return nil, fmt.Errorf("could not retrieve the processes of the container with ID %s: %s", container.ID(), err)
+	}
+
+	for _, process := range processes {
+		c.pidCache.Store(currentTime, strconv.FormatUint(uint64(process.Pid), 10), container.ID(), nil)
+	}
+	return processes, nil
 }
 
 func getContainerdStatsLinux(metrics *v1.Metrics, container containers.Container, OCISpec *oci.Spec, processes []containerd.ProcessInfo) *provider.ContainerStats {
@@ -188,14 +257,14 @@ func getContainerdCPUStatsLinux(cpuStat *v1.CPUStat, currentTime time.Time, star
 	res := provider.ContainerCPUStats{}
 
 	if cpuStat.Usage != nil {
-		res.Total = util.UIntToFloatPtr(cpuStat.Usage.Total)
-		res.System = util.UIntToFloatPtr(cpuStat.Usage.Kernel)
-		res.User = util.UIntToFloatPtr(cpuStat.Usage.User)
+		res.Total = pointer.UIntToFloatPtr(cpuStat.Usage.Total)
+		res.System = pointer.UIntToFloatPtr(cpuStat.Usage.Kernel)
+		res.User = pointer.UIntToFloatPtr(cpuStat.Usage.User)
 	}
 
 	if cpuStat.Throttling != nil {
-		res.ThrottledPeriods = util.UIntToFloatPtr(cpuStat.Throttling.ThrottledPeriods)
-		res.ThrottledTime = util.UIntToFloatPtr(cpuStat.Throttling.ThrottledTime)
+		res.ThrottledPeriods = pointer.UIntToFloatPtr(cpuStat.Throttling.ThrottledPeriods)
+		res.ThrottledTime = pointer.UIntToFloatPtr(cpuStat.Throttling.ThrottledTime)
 	}
 
 	res.Limit = getContainerdCPULimit(currentTime, startTime, OCISpec)
@@ -209,21 +278,21 @@ func getContainerdMemoryStatsLinux(memStat *v1.MemoryStat) *provider.ContainerMe
 	}
 
 	res := provider.ContainerMemStats{
-		RSS:   util.UIntToFloatPtr(memStat.RSS),
-		Cache: util.UIntToFloatPtr(memStat.Cache),
+		RSS:   pointer.UIntToFloatPtr(memStat.RSS),
+		Cache: pointer.UIntToFloatPtr(memStat.Cache),
 	}
 
 	if memStat.Usage != nil {
-		res.UsageTotal = util.UIntToFloatPtr(memStat.Usage.Usage)
-		res.Limit = util.UIntToFloatPtr(memStat.Usage.Limit)
+		res.UsageTotal = pointer.UIntToFloatPtr(memStat.Usage.Usage)
+		res.Limit = pointer.UIntToFloatPtr(memStat.Usage.Limit)
 	}
 
 	if memStat.Kernel != nil {
-		res.KernelMemory = util.UIntToFloatPtr(memStat.Kernel.Usage)
+		res.KernelMemory = pointer.UIntToFloatPtr(memStat.Kernel.Usage)
 	}
 
 	if memStat.Swap != nil {
-		res.Swap = util.UIntToFloatPtr(memStat.Swap.Usage)
+		res.Swap = pointer.UIntToFloatPtr(memStat.Swap.Usage)
 	}
 
 	return &res
@@ -235,10 +304,10 @@ func getContainerdIOStatsLinux(blkioStat *v1.BlkIOStat, processes []containerd.P
 	}
 
 	result := provider.ContainerIOStats{
-		ReadBytes:       util.Float64Ptr(0),
-		WriteBytes:      util.Float64Ptr(0),
-		ReadOperations:  util.Float64Ptr(0),
-		WriteOperations: util.Float64Ptr(0),
+		ReadBytes:       pointer.Float64Ptr(0),
+		WriteBytes:      pointer.Float64Ptr(0),
+		ReadOperations:  pointer.Float64Ptr(0),
+		WriteOperations: pointer.Float64Ptr(0),
 		Devices:         make(map[string]provider.DeviceIOStats),
 	}
 
@@ -247,9 +316,9 @@ func getContainerdIOStatsLinux(blkioStat *v1.BlkIOStat, processes []containerd.P
 		device := result.Devices[deviceName]
 		switch blkioStatEntry.Op {
 		case "Read":
-			device.ReadBytes = util.Float64Ptr(float64(blkioStatEntry.Value))
+			device.ReadBytes = pointer.Float64Ptr(float64(blkioStatEntry.Value))
 		case "Write":
-			device.WriteBytes = util.Float64Ptr(float64(blkioStatEntry.Value))
+			device.WriteBytes = pointer.Float64Ptr(float64(blkioStatEntry.Value))
 		}
 		result.Devices[deviceName] = device
 	}
@@ -259,9 +328,9 @@ func getContainerdIOStatsLinux(blkioStat *v1.BlkIOStat, processes []containerd.P
 		device := result.Devices[deviceName]
 		switch blkioStatEntry.Op {
 		case "Read":
-			device.ReadOperations = util.Float64Ptr(float64(blkioStatEntry.Value))
+			device.ReadOperations = pointer.Float64Ptr(float64(blkioStatEntry.Value))
 		case "Write":
-			device.WriteOperations = util.Float64Ptr(float64(blkioStatEntry.Value))
+			device.WriteOperations = pointer.Float64Ptr(float64(blkioStatEntry.Value))
 		}
 		result.Devices[deviceName] = device
 	}
@@ -286,10 +355,10 @@ func getContainerdIOStatsLinux(blkioStat *v1.BlkIOStat, processes []containerd.P
 
 func getContainerdNetworkStatsLinux(networkStats []*v1.NetworkStat) *provider.ContainerNetworkStats {
 	containerNetworkStats := provider.ContainerNetworkStats{
-		BytesSent:   util.Float64Ptr(0),
-		BytesRcvd:   util.Float64Ptr(0),
-		PacketsSent: util.Float64Ptr(0),
-		PacketsRcvd: util.Float64Ptr(0),
+		BytesSent:   pointer.Float64Ptr(0),
+		BytesRcvd:   pointer.Float64Ptr(0),
+		PacketsSent: pointer.Float64Ptr(0),
+		PacketsRcvd: pointer.Float64Ptr(0),
 		Interfaces:  make(map[string]provider.InterfaceNetStats),
 	}
 
@@ -300,10 +369,10 @@ func getContainerdNetworkStatsLinux(networkStats []*v1.NetworkStat) *provider.Co
 		*containerNetworkStats.PacketsRcvd += float64(stats.RxPackets)
 
 		containerNetworkStats.Interfaces[stats.Name] = provider.InterfaceNetStats{
-			BytesSent:   util.UIntToFloatPtr(stats.TxBytes),
-			BytesRcvd:   util.UIntToFloatPtr(stats.RxBytes),
-			PacketsSent: util.UIntToFloatPtr(stats.TxPackets),
-			PacketsRcvd: util.UIntToFloatPtr(stats.RxPackets),
+			BytesSent:   pointer.UIntToFloatPtr(stats.TxBytes),
+			BytesRcvd:   pointer.UIntToFloatPtr(stats.RxBytes),
+			PacketsSent: pointer.UIntToFloatPtr(stats.TxPackets),
+			PacketsRcvd: pointer.UIntToFloatPtr(stats.RxPackets),
 		}
 	}
 
@@ -350,9 +419,9 @@ func getContainerdCPUStatsWindows(procStats *wstats.WindowsContainerProcessorSta
 	}
 
 	return &provider.ContainerCPUStats{
-		Total:  util.UIntToFloatPtr(procStats.TotalRuntimeNS),
-		System: util.UIntToFloatPtr(procStats.RuntimeKernelNS),
-		User:   util.UIntToFloatPtr(procStats.RuntimeUserNS),
+		Total:  pointer.UIntToFloatPtr(procStats.TotalRuntimeNS),
+		System: pointer.UIntToFloatPtr(procStats.RuntimeKernelNS),
+		User:   pointer.UIntToFloatPtr(procStats.RuntimeUserNS),
 	}
 }
 
@@ -362,9 +431,9 @@ func getContainerdMemoryStatsWindows(memStats *wstats.WindowsContainerMemoryStat
 	}
 
 	return &provider.ContainerMemStats{
-		PrivateWorkingSet: util.UIntToFloatPtr(memStats.MemoryUsagePrivateWorkingSetBytes),
-		CommitBytes:       util.UIntToFloatPtr(memStats.MemoryUsageCommitBytes),
-		CommitPeakBytes:   util.UIntToFloatPtr(memStats.MemoryUsageCommitPeakBytes),
+		PrivateWorkingSet: pointer.UIntToFloatPtr(memStats.MemoryUsagePrivateWorkingSetBytes),
+		CommitBytes:       pointer.UIntToFloatPtr(memStats.MemoryUsageCommitBytes),
+		CommitPeakBytes:   pointer.UIntToFloatPtr(memStats.MemoryUsageCommitPeakBytes),
 	}
 }
 
@@ -374,18 +443,9 @@ func getContainerdIOStatsWindows(ioStats *wstats.WindowsContainerStorageStatisti
 	}
 
 	return &provider.ContainerIOStats{
-		ReadBytes:       util.UIntToFloatPtr(ioStats.ReadSizeBytes),
-		WriteBytes:      util.UIntToFloatPtr(ioStats.WriteSizeBytes),
-		ReadOperations:  util.UIntToFloatPtr(ioStats.ReadCountNormalized),
-		WriteOperations: util.UIntToFloatPtr(ioStats.WriteCountNormalized),
+		ReadBytes:       pointer.UIntToFloatPtr(ioStats.ReadSizeBytes),
+		WriteBytes:      pointer.UIntToFloatPtr(ioStats.WriteSizeBytes),
+		ReadOperations:  pointer.UIntToFloatPtr(ioStats.ReadCountNormalized),
+		WriteOperations: pointer.UIntToFloatPtr(ioStats.WriteCountNormalized),
 	}
-}
-
-func (c *containerdCollector) containerNamespace(containerID string) (string, error) {
-	container, err := c.workloadmetaStore.GetContainer(containerID)
-	if err != nil {
-		return "", err
-	}
-
-	return container.Namespace, nil
 }
