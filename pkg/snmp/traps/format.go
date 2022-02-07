@@ -21,9 +21,8 @@ const (
 func FormatPacketToJSON(packet *SnmpPacket) (map[string]interface{}, error) {
 	if packet.Content.Version == gosnmp.Version1 {
 		return formatV1Trap(packet), nil
-	} else {
-		return formatTrap(packet)
 	}
+	return formatTrap(packet)
 }
 
 // GetTags returns a list of tags associated to an SNMP trap packet.
@@ -72,7 +71,7 @@ func formatV1Trap(packet *SnmpPacket) map[string]interface{} {
 
 func formatTrap(packet *SnmpPacket) (map[string]interface{}, error) {
 	/*
-		An SNMPv2 trap packet consists in the following variables (PDUs):
+		An SNMP v2 or v3 trap packet consists in the following variables (PDUs):
 		{sysUpTime.0, snmpTrapOID.0, additionalDataVariables...}
 		See: https://tools.ietf.org/html/rfc3416#section-4.2.6
 	*/

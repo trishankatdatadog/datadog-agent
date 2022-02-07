@@ -22,7 +22,7 @@ type SnmpPacket struct {
 // PacketsChannel is the type of channels of trap packets.
 type PacketsChannel = chan *SnmpPacket
 
-// TrapServer manages an SNMPv2 trap listener.
+// TrapServer manages an SNMP trap listener.
 type TrapServer struct {
 	Addr     string
 	config   *Config

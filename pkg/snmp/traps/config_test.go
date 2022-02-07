@@ -8,11 +8,23 @@ package traps
 import (
 	"testing"
 
+	"github.com/DataDog/datadog-agent/pkg/util"
+	"github.com/DataDog/datadog-agent/pkg/util/cache"
 	"github.com/gosnmp/gosnmp"
 	"github.com/stretchr/testify/assert"
 )
 
+const mockedHostname = "VeryLongHostnameThatDoesNotFitIntoTheByteArray"
+
+var expectedEngineID = [28]byte{0x80, 0xff, 0xff, 0xff, 0xff, 0x56, 0x65, 0x72, 0x79, 0x4c, 0x6f, 0x6e, 0x67, 0x48, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x54, 0x68, 0x61, 0x74, 0x44, 0x6f, 0x65}
+
+func setMockedHostname() {
+	cacheHostnameKey := cache.BuildAgentKey("hostname")
+	cache.Cache.Set(cacheHostnameKey, util.HostnameData{Hostname: mockedHostname}, -1)
+}
+
 func TestFullConfig(t *testing.T) {
+	setMockedHostname()
 	Configure(t, Config{
 		Port: 1234,
 		Users: []UserV3{
@@ -53,7 +65,7 @@ func TestFullConfig(t *testing.T) {
 	assert.Equal(t, gosnmp.UserSecurityModel, params.SecurityModel)
 	assert.Equal(t, &gosnmp.UsmSecurityParameters{
 		UserName:                 "user",
-		AuthoritativeEngineID:    "\x80\x00\x4f\xb8\x05\x67\x72\x6f\x6d\x6d\x69\x74\x20",
+		AuthoritativeEngineID:    string(expectedEngineID[:]),
 		AuthenticationProtocol:   gosnmp.MD5,
 		AuthenticationPassphrase: "password",
 		PrivacyProtocol:          gosnmp.AES,
@@ -89,4 +101,11 @@ func TestDefaultUsers(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, 11, config.StopTimeout)
+}
+
+func TestBuildAuthoritativeEngineID(t *testing.T) {
+	setMockedHostname()
+	config := Config{}
+	engineID := config.BuildAuthoritativeEngineID()
+	assert.Equal(t, [28]byte{0x80, 0xff, 0xff, 0xff, 0xff, 0x56, 0x65, 0x72, 0x79, 0x4c, 0x6f, 0x6e, 0x67, 0x48, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x54, 0x68, 0x61, 0x74, 0x44, 0x6f, 0x65}, engineID)
 }

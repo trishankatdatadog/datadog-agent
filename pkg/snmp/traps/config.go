@@ -82,28 +82,33 @@ func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.BindHost, c.Port)
 }
 
-func (c *Config) BuildAuthoritativeEngineID() [28]byte {
-	engineID := [28]byte{}
-	// First byte is always 0x80
-	// Next four bytes are the Private Enterprise Number (set to an invalid value here)
-	copy(engineID[:5], []byte{0x80, 0xff, 0xff, 0xff, 0xff})
+func (c *Config) getAgentHostname() string {
 	hostname, err := util.GetHostname(context.TODO())
 	if err != nil {
 		// this scenario is not likely to happen since
 		// the agent cannot start without a hostname
 		hostname = "unknown-datadog-agent"
 	}
-	copy(engineID[5:], []byte(hostname))
+	return hostname
+}
+
+// BuildAuthoritativeEngineID creates a engineID byte-array from the OS hostname
+func (c *Config) BuildAuthoritativeEngineID() [28]byte {
+	engineID := [28]byte{}
+	// First byte is always 0x80
+	// Next four bytes are the Private Enterprise Number (set to an invalid value here)
+	copy(engineID[:5], []byte{0x80, 0xff, 0xff, 0xff, 0xff})
+	copy(engineID[5:], []byte(c.getAgentHostname()))
 	return engineID
 }
 
-// BuildV2Params returns a valid GoSNMP SNMPv2 params structure from configuration.
+// BuildSNMPParams returns a valid GoSNMP params structure from configuration.
 func (c *Config) BuildSNMPParams() (*gosnmp.GoSNMP, error) {
 	if len(c.Users) == 0 {
 		return &gosnmp.GoSNMP{
 			Port:      c.Port,
 			Transport: "udp",
-			Version:   gosnmp.Version2c, // No user configured, let's user Version2 which is enough and doesn't require setting up fake security data.
+			Version:   gosnmp.Version2c, // No user configured, let's use Version2 which is enough and doesn't require setting up fake security data.
 			Logger:    gosnmp.NewLogger(&trapLogger{}),
 		}, nil
 	}

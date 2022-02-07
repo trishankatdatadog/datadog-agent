@@ -103,10 +103,10 @@ func TestFormatPacketV1Specific(t *testing.T) {
 	assert.Equal(t, alarmActiveModelPointer["type"], "string")
 	assert.Equal(t, alarmActiveModelPointer["value"], "foo")
 
-	alarmActiveResourceId := variables[1]
-	assert.Equal(t, alarmActiveResourceId["oid"], "1.3.6.1.2.1.118.1.2.2.1.10")
-	assert.Equal(t, alarmActiveResourceId["type"], "string")
-	assert.Equal(t, alarmActiveResourceId["value"], "bar")
+	alarmActiveResourceID := variables[1]
+	assert.Equal(t, alarmActiveResourceID["oid"], "1.3.6.1.2.1.118.1.2.2.1.10")
+	assert.Equal(t, alarmActiveResourceID["type"], "string")
+	assert.Equal(t, alarmActiveResourceID["value"], "bar")
 
 }
 

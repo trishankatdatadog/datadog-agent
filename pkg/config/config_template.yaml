@@ -2815,7 +2815,7 @@ api_key:
 ## @param snmp_traps_config - custom object - optional
 ## This section configures SNMP traps collection. Traps are forwarded as logs to Datadog.
 ## NOTE: This feature is currently **EXPERIMENTAL**. Both behavior and configuration options may
-## change in the future. Only SNMPv2 is supported.
+## change in the future.
 #
 # snmp_traps_config:
 
@@ -2825,7 +2825,7 @@ api_key:
   # port: 162
 
   ## @param community_strings - list of strings - required
-  ## A list of known SNMPv2 community strings that devices can use to send traps to the Agent.
+  ## A list of known SNMP community strings that devices can use to send traps to the Agent.
   ## Traps with an unknown community string are ignored.
   ## Enclose the community string with single quote like below (to avoid special characters being interpreted).
   ## Must be non-empty.
