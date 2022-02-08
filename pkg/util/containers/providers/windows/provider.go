@@ -123,16 +123,20 @@ func (mp *provider) fillContainerDetails(cjson types.ContainerJSON, containerBun
 	}
 
 	// Parsing limits
-	var cpuMax float64 = 0
+	var cpuLimit float64 = 0
 	if cjson.HostConfig.NanoCPUs > 0 {
-		cpuMax = float64(cjson.HostConfig.NanoCPUs) / 1e9 / float64(sysinfo.NumCPU()) * 100
+		cpuLimit = float64(cjson.HostConfig.NanoCPUs) / 1e9 * 100
+		log.Infof("CELENE0, cpuLimit is %v", cpuLimit)
 	} else if cjson.HostConfig.CPUPercent > 0 {
-		cpuMax = float64(cjson.HostConfig.CPUPercent)
+		// HostConfig.CPUPercent is based on total CPU capacity of the system
+		cpuLimit = float64(cjson.HostConfig.CPUPercent) * float64(sysinfo.NumCPU())
+		log.Infof("CELENE1, cpuLimit is %v", cpuLimit)
 	} else if cjson.HostConfig.CPUCount > 0 {
-		cpuMax = math.Min(float64(cjson.HostConfig.CPUCount), float64(sysinfo.NumCPU())) / float64(sysinfo.NumCPU()) * 100
+		cpuLimit = float64(cjson.HostConfig.CPUCount) * 100
+		log.Infof("CELENE2, cpuLimit is %v", cpuLimit)
 	}
 	containerBundle.limits = &metrics.ContainerLimits{
-		CPULimit: cpuMax,
+		CPULimit: cpuLimit,
 		MemLimit: uint64(cjson.HostConfig.Memory),
 		//ThreadLimit: 0, // Unknown ?
 	}
